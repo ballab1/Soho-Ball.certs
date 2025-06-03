@@ -1,0 +1,10 @@
+openssl req -x509 -nodes -days 365 \
+  -newkey rsa:2048 \
+  -keyout myapp.key \
+  -out myapp.crt \
+  -config san.cnf \
+  -extensions v3_ext
+	•	myapp.key: your private key
+	•	myapp.crt: your self-signed certificate
+
+cat myapp.crt myapp.key > myapp.pem

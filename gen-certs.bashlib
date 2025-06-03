@@ -1,0 +1,712 @@
+#!/bin/echo 'This script cannot be executabled directly. Please source from another script'
+
+# Certificate generation process consists of three steps:
+#    (1) generate a strong private key
+#    (2) create a Certificate Signing Request (CSR) and send it to a CA
+#    (3) install the CA-provided certificate in your web server
+
+#shellcheck disable=SC2034
+declare -r k8s_NO_ASCII='s|\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[mK]||g'
+declare -r BLUE='\x1b[94m'
+declare -r GREEN='\x1b[32m'
+declare -r GREY='\x1b[90m'
+declare -r MAGENTA='\x1b[95m'
+declare -r RED='\x1b[31m'
+declare -r RESET='\x1b[0m'
+declare -r WHITE='\x1b[97m'
+
+#====================================================================================
+#
+# Filling Out CSR Wildcard
+#=========================
+# While generating CSR wildcard, you'll be asked to enter a series of details. You'll need to provide the following details:
+#     - Common Name Wildcard: This is your domain's complete name.
+#     - Organization Name: This is the legal name of your company.
+#     - Organization Unit: This is the specific department within your company that you belong to.
+#     - Your company's location, including the state/province and country of origin.
+#     - Company email address.
+#     - 2048-bit root length.
+#     - SHA-2 signature algorithm.
+# The best aspect of a Comodo wildcard certificate is that it allows you to secure unlimited sub-domains in addition
+# to the primary domain. All you have to do is place an asterisk ahead of the domain name when filling out the CSR wildcard.
+#
+# For example, if you're registering the domain website.com, you'll have to enter *.website.com.
+# This will ensure that you can add any subdomains you want. Furthermore, if you want to add more subdomains later during
+# the certificate's lifecycle, you can do that as well.
+#
+# How to Generate CSR for Wildcard Certificate?
+# You can create wildcard certificate CSR using OpenSSL, which is the most commonly used platform for CSR generation.
+# It can be done via the following steps:
+#     1: Access the terminal client in your web server.
+#     2: Type the following: openssl req –new –newkey rsa:2048 –nodes –keyout server.key –out server.csr
+#     3: Enter the domain name, accompanied with the asterisk as illustrated earlier.
+#     4: Enter all of the organization's details.
+#     5: You're done! Once you enter the aforementioned details, you would have created a CSR for wildcard.
+#
+# Once you create the wildcard CSR, be sure to also keep the Private Key in the same machine as the generated CSR.
+# More Info
+#    https://cheapsslsecurity.com/blog/generate-wildcard-csr-in-few-minutes/
+
+#------------------------------------------------------------------------------
+function gen_certs::die() {
+
+    echo -e "\n${RED}ERROR: ${FUNCNAME[1]}(): ${1}${RESET}\n" >&2
+    exit
+}
+
+#------------------------------------------------------------------------------
+function gen_certs::displayAll() {
+
+    [ "${SHOW_OPENSSL:-0}" -ne 0 ] && return
+
+    local -r certs_dir="${1:?}"
+    shift
+    cd "${certs_dir}" ||:
+
+    echo -e "${BLUE}Displaying all keys and certificates${RESET}" >&2
+    local file
+    while read -r file; do
+        gen_certs::displayPem "${file:2}" "$@"
+    done < <(find . -name '*.key' -or -name '*.crt' -or -name '*.csr' | sort);
+}
+
+#------------------------------------------------------------------------------
+function gen_certs::displayCertificateContents() {
+
+    [ "${SHOW_OPENSSL:-0}" -ne 0 ] && return
+
+    local -r certificate="${1:?}"
+
+    [ -f "$certificate" ] || gen_certs::die "Display CERTIFICATE failed. '${certificate}' does not exist."
+
+    printf '\n\n%s\n' "$certificate"
+
+    # display contents of our own Certificates
+    "$OPENSSL" x509 -in "$certificate" -noout -text
+}
+
+#------------------------------------------------------------------------------
+function gen_certs::displayCertificateSigningRequest() {
+
+    [ "${SHOW_OPENSSL:-0}" -ne 0 ] && return
+
+    local -r csr="${1:?}"
+
+    [ -f "$csr" ] || gen_certs::die "Display CSR failed. '${csr}' does not exist."
+
+    printf '\n\n%s\n' "$csr"
+
+    "$OPENSSL" req -in "$csr" -noout -text
+}
+
+#------------------------------------------------------------------------------
+function gen_certs::displayKeyContents() {
+
+    [ "${SHOW_OPENSSL:-0}" -ne 0 ] && return
+
+    local -r key="${1:?}"
+    local -r passphrase="${2:-}"
+    local -a args=()
+
+    [ -f "$key" ] || gen_certs::die "Display KEY failed. '${key}' does not exist."
+
+    printf '\n\n%s\n' "$key"
+
+    [ "${passphrase:-}" ] && args=('-passin' "${passphrase}")
+
+    # display contents of our key
+    "$OPENSSL" pkey -in "$key" -noout -text "${args[@]}"
+}
+
+
+#------------------------------------------------------------------------------
+function gen_certs::displayPem() {
+
+    [ "${SHOW_OPENSSL:-0}" -ne 0 ] && return
+
+    local -r pem="${1:?}"
+    shift
+
+    [ -f "$pem" ] || gen_certs::die "Display PEM failed. '${pem}' does not exist."
+
+    local -r out="${MYCA_DIR}/crl/$(basename "$pem").inf"
+    mkdir -p "${MYCA_DIR}/crl" ||:
+    # use file extension for 'case' statement
+    case "${pem##*.}" in
+       csr)
+          gen_certs::displayCertificateSigningRequest "$pem" "$@" > "$out";;
+       crt)
+          gen_certs::displayCertificateContents "$pem" "$@" > "$out";;
+       dh)
+          gen_certs::displayDhContents "$pem" "$@" > "$out";;
+       key)
+          gen_certs::displayKeyContents "$pem" "$@" > "$out";;
+       *)
+          gen_certs::die "File with invalid extension, must be csr|crt|key|dh";;
+    esac
+}
+
+#------------------------------------------------------------------------------
+# use to generate leaf certificates
+function gen_certs::genCertificate() {
+
+    # -------------------------------
+    # generate a key
+    gen_certs::genKey "$@"
+
+    # -------------------------------
+    # generate a Certificate Signing Request
+    gen_certs::genCertificateSigningRequest "$@"
+
+    # -------------------------------
+    #shellcheck disable=SC2178
+    local -n args="${1:?}"
+
+    # verify mandatory params
+    for key in 'crt_extns' 'csr_file' 'crt_file' 'cfg_file' 'signing_key';do
+        [ "${args[$key]:-}" ] || gen_certs::die "NULL '$key' passed in '${1}'"
+    done
+
+    # create arg list for openssl
+    local -a params=( '-batch' '-notext' )
+    for key in "${!args[@]}";do
+        case "$key" in
+           crt_extns)   params+=( '-extensions' "${args['crt_extns']}" );;
+           csr_file)    params+=( '-in' "${args['csr_file']}" );;
+           crt_file)    params+=( '-out' "${args['crt_file']}" );;
+           cfg_file)    params+=( '-config' "${args['cfg_file']}" );;
+        esac
+    done
+    [ "${args['passphrase']:-}" ] && params+=( '-passin' "${args['passphrase']}" )
+
+    #shellcheck disable=SC2086
+    echo -e "${BLUE}Using '$(basename ${args['csr_file']})' CSR, create certificate:${RESET} '$(basename ${args['crt_file']})'" >&2
+    "$OPENSSL" ca "${params[@]}"
+
+    # -------------------------------
+    # save text info for certificate
+    gen_certs::displayPem "${args['crt_file']}" "${args['passphrase']:-}"
+
+    # -------------------------------
+    # verify certificate
+    gen_certs::verifyCertificate "${args['signing_key']}" "${args['crt_file']}"
+    #   - The resulting "${args['crt_file']}" is now a valid CA-signed certificate.
+
+    # -------------------------------
+    # generate PKS file
+    [ "${args['pks12']:-}" ] && gen_certs::genPks12 "$@"
+
+    # -------------------------------
+    # generate DH file
+    [ "${args['dh_file']:-}" ] && gen_certs::genServerDHParam "$@"
+}
+
+#------------------------------------------------------------------------------
+function gen_certs::genCertificateSigningRequest() {
+
+    #shellcheck disable=SC2178
+    local -n args="${1:?}"
+
+    # verify mandatory params
+    for key in 'cfg_file' 'key_file' 'csr_extns' 'csr_file';do
+        [ "${args[$key]:-}" ] || gen_certs::die "NULL '$key' passed in '${1}'"
+    done
+
+    # create arg list for openssl
+    local -a params=( '-new' )
+    for key in "${!args[@]}";do
+        case "$key" in
+           key_file)   params+=( '-key' "${args['key_file']}" );;
+           csr_file)   params+=( '-out' "${args['csr_file']}" );;
+           csr_extns)  params+=( '-section' "${args['csr_extns']}" );;
+           cfg_file)   params+=( '-config' "${args['cfg_file']}" );;
+        esac
+    done
+    [ "${args['passphrase']:-}" ] && params+=( '-passin' "${args['passphrase']}" )
+
+    #shellcheck disable=SC2086
+    echo -e "${BLUE}Create Certificate Signing Request (CSR):${RESET} '$(basename ${args['csr_file']})'"
+    "$OPENSSL" req "${params[@]}"
+
+
+    # -------------------------------
+    # save text info for csr
+    gen_certs::displayPem "${args['csr_file']}" "${args['passphrase']:-}"
+}
+
+#------------------------------------------------------------------------------
+function gen_certs::genChain() {
+
+    #shellcheck disable=SC2178
+    local -n args="${1:?}"
+
+    # verify mandatory params
+    for key in 'signing_key' 'crt_file' 'chain';do
+        [ "${args[$key]:-}" ] || gen_certs::die "NULL '$key' passed in '${1}'"
+    done
+
+
+    #shellcheck disable=SC2086
+    echo -e "${BLUE}Establish the Certificate Chain: ${RESET}'${args['chain']}'" >&2
+    [ "${SHOW_OPENSSL:-0}" -ne 0 ] && (echo -e "${GREY}cat '${args['crt_file']}' '${args['signing_key']}' > '${args['chain']}'${RESET}" >&2)
+    cat "${args['crt_file']}" "${args['signing_key']}" > "${args['chain']}"
+}
+
+#------------------------------------------------------------------------------
+function gen_certs::genConfig() {
+
+    #shellcheck disable=SC2178
+    local -n args="${1:?}"
+
+    # verify mandatory params
+    for key in 'cfg_file' 'ca_root_crt' 'ca_root_key' 'intermediate_ca_1_crt' 'intermediate_ca_1_key' 'intermediate_ca_2_crt' 'intermediate_ca_2_key';do
+        [ "${args[$key]:-}" ] || gen_certs::die "NULL '$key' passed in '${1}'"
+    done
+
+    #
+    gen_certs::prepareEnvironment
+
+    local -r cfg_file="${args['cfg_file']}"
+
+    #shellcheck disable=SC2086
+    echo -e "${BLUE}Create OpenSSL configuration file to configure OpenSSL:${RESET} '$(basename $cfg_file)'"
+    #   This enables proper CA management.
+
+    mkdir -p "$(dirname "$cfg_file")" ||:
+    cat << EOF > "$cfg_file"
+[ ca ]
+default_ca = rootca
+
+[ rootca ]
+dir                 = $MYCA_DIR
+database            = \$dir/index.txt
+serial              = \$dir/serial
+new_certs_dir       = \$dir/newcerts
+certificate         = ${args['ca_root_crt']}
+private_key         = ${args['ca_root_key']}
+default_days        = $VALID_DAYS
+default_md          = sha256
+default_bits        = $KEYLENGTH
+distinguished_name  = rootca_distinguished_name
+x509_extensions     = v3_rootca
+prompt              = no
+policy              = policy_match  # or policy_anything / policy_loose
+
+[ policy_match ]
+countryName         = match
+stateOrProvinceName = optional
+organizationName    = match
+commonName          = supplied
+
+[ intermediate_ca ]
+dir                = $MYCA_INTERMITTENT_DIR
+database           = \$dir/index.txt
+serial             = \$dir/serial
+new_certs_dir      = \$dir/newcerts
+certificate        = ${args['intermediate_ca_1_crt']}
+private_key        = ${args['intermediate_ca_1_key']}
+default_md         = sha256
+policy             = policy_loose
+default_days       = $VALID_DAYS
+default_bits       = $KEYLENGTH
+x509_extensions    = v3_rootca
+distinguished_name = intermediate_distinguished_name
+prompt             = no
+
+[ intermediate_ca_2 ]
+dir                = $MYCA_INTERMITTENT_DIR
+database           = \$dir/index.txt
+serial             = \$dir/serial
+new_certs_dir      = \$dir/newcerts
+certificate        = ${args['intermediate_ca_2_crt']}
+private_key        = ${args['intermediate_ca_2_key']}
+default_md         = sha256
+policy             = policy_loose
+default_days       = $VALID_DAYS
+default_bits       = $KEYLENGTH
+x509_extensions    = v3_rootca
+distinguished_name = intermediate_2_distinguished_name
+prompt             = no
+
+[ v3_csr ]
+default_days       = $VALID_DAYS
+default_md         = sha256
+default_bits       = $KEYLENGTH
+x509_extensions    = v3_rootca
+#distinguished_name = server_distinguished_name
+prompt             = no
+
+[ v3_req ]
+default_days       = $VALID_DAYS
+default_md         = sha256
+default_bits       = $KEYLENGTH
+x509_extensions    = v3_rootca
+distinguished_name = distinguished_name
+prompt             = no
+
+[ v3_req2 ]
+default_days       = $VALID_DAYS
+default_md         = sha256
+default_bits       = $KEYLENGTH
+x509_extensions    = v3_rootca
+distinguished_name = server_distinguished_name
+prompt             = no
+
+[ v3_req2_2 ]
+default_days       = $VALID_DAYS
+default_md         = sha256
+default_bits       = $KEYLENGTH
+x509_extensions    = v3_rootca
+distinguished_name = server_2_distinguished_name
+prompt             = no
+
+[ v3_rootca ]
+basicConstraints       = critical, CA:true
+subjectKeyIdentifier   = hash
+keyUsage               = critical, keyCertSign, cRLSign
+authorityKeyIdentifier = keyid:always, issuer:always
+crlDistributionPoints  = URI:http://example.home/crl.pem
+1.3.6.1.5.5.7.1.9      = ASN1:NULL
+
+[ intermediate_exts ]
+basicConstraints        = critical, CA:false
+subjectKeyIdentifier    = hash
+#authorityKeyIdentifier = keyid, issuer
+#extendedKeyUsage       = serverAuth, clientAuth
+extendedKeyUsage        = serverAuth
+keyUsage                = keyEncipherment, dataEncipherment, digitalSignature
+
+[ server_exts ]
+basicConstraints        = critical, CA:false
+subjectKeyIdentifier    = hash
+#authorityKeyIdentifier = keyid, issuer
+#extendedKeyUsage       = serverAuth, clientAuth
+extendedKeyUsage        = serverAuth
+keyUsage                = keyEncipherment, dataEncipherment, digitalSignature
+subjectAltName          = @alt_names
+
+[ rootca_distinguished_name ]
+countryName             = US
+stateOrProvinceName     = Massachusetts
+localityName            = Mansfield
+organizationName        = soho_ball
+organizationalUnitName  = home
+commonName              = Ballantyne home-network CA
+emailAddress            = ballantyne.robert@gmail.com
+
+[ intermediate_distinguished_name ]
+countryName             = US
+stateOrProvinceName     = Massachusetts
+localityName            = Mansfield
+organizationName        = soho_ball
+organizationalUnitName  = home
+commonName              = Ballantyne k8s-backend Intermediate CA
+emailAddress            = ballantyne.robert@gmail.com
+
+[ intermediate_2_distinguished_name ]
+countryName             = US
+stateOrProvinceName     = Massachusetts
+localityName            = Mansfield
+organizationName        = soho_ball
+organizationalUnitName  = home
+commonName              = Ballantyne k8s-frontend Intermediate CA
+emailAddress            = ballantyne.robert@gmail.com
+
+[ server_distinguished_name ]
+countryName             = US
+stateOrProvinceName     = Massachusetts
+localityName            = Mansfield
+organizationName        = soho_ball
+organizationalUnitName  = home
+commonName              = Ballantyne k8s-backend
+emailAddress            = ballantyne.robert@gmail.com
+
+[ server_2_distinguished_name ]
+countryName             = US
+stateOrProvinceName     = Massachusetts
+localityName            = Mansfield
+organizationName        = soho_ball
+organizationalUnitName  = home
+commonName              = Ballantyne k8s-frontend
+emailAddress            = ballantyne.robert@gmail.com
+
+[ distinguished_name ]
+countryName             = US
+stateOrProvinceName     = Massachusetts
+localityName            = Mansfield
+organizationName        = soho_ball
+organizationalUnitName  = home
+commonName              = Ballantyne home
+emailAddress            = ballantyne.robert@gmail.com
+
+[ alt_names ]
+DNS.1 = *.home
+DNS.2 = *.ubuntu.home
+DNS.3 = *.k8s.home
+DNS.4 = *.prod.k8s.home
+DNS.5 = *.dev.k8s.home
+IP.1  = 127.0.0.1
+
+EOF
+}
+
+#------------------------------------------------------------------------------
+function gen_certs::genIntermediateCertificate() {
+
+    # -------------------------------
+    # generate our key
+    gen_certs::genKey "$@"
+
+
+    # -------------------------------
+    # generate a certificate signing request
+    gen_certs::genCertificateSigningRequest "$@"
+
+
+    # -------------------------------
+    #shellcheck disable=SC2178
+    local -n args="${1:?}"
+
+    # verify mandatory params
+    for key in 'cfg_file' 'crt_extns' 'csr_file' 'crt_file' 'signing_key' 'chain';do
+        [ "${args[$key]:-}" ] || gen_certs::die "NULL '$key' passed in '${1}'"
+    done
+
+    # create arg list for openssl
+    local -a params=( '-batch' '-notext' )
+    for key in "${!args[@]}";do
+        case "$key" in
+           cfg_file)     params+=( '-config' "${args['cfg_file']}" );;
+           crt_extns)    params+=( '-extensions' "${args['crt_extns']}" );;
+           csr_file)     params+=( '-in' "${args['csr_file']}" );;
+           crt_file)     params+=( '-out' "${args['crt_file']}" );;
+        esac
+    done
+    [ "${args['passphrase']:-}" ] && params+=( '-passin' "${args['passphrase']}" )
+
+    #shellcheck disable=SC2086
+    echo -e "${BLUE}Using '$(basename ${args['csr_file']})' CSR, create Intermediate-CA certificate:${RESET} '$(basename ${args['crt_file']})'"
+
+    #   - The **root CA** signs the intermediate CSR, and issues an intermediate certificate:
+    "$OPENSSL" ca "${params[@]}"
+
+    # -------------------------------
+    # create the intermediate chain
+    gen_certs::genChain "$@"
+
+    # -------------------------------
+    # verify chain
+    gen_certs::verifyCertificate "${args['signing_key']}" "${args['crt_file']}"
+    #   - The resulting "${args['crt_file']}" is now a valid CA-signed certificate.
+
+    # -------------------------------
+    # save text info for certificate
+    gen_certs::displayPem "${args['crt_file']}" "${args['passphrase']:-}"
+}
+
+#------------------------------------------------------------------------------
+function gen_certs::genKey() {
+
+    #shellcheck disable=SC2178
+    local -n args="${1:?}"
+
+    # verify mandatory params
+    for key in 'key_file' 'keylength';do
+        [ "${args[$key]:-}" ] || gen_certs::die "NULL '$key' passed in ${1}"
+    done
+
+    # create arg list for openssl
+    local -a params=( )
+    [ "${args['cipher']:-}" ] && params+=( "${args['cipher']}" )
+    for key in "${!args[@]}";do
+        case "$key" in
+           key_file)   params+=( '-out' "${args['key_file']}" );;
+        esac
+    done
+    [ "${args['passphrase']:-}" ] && params+=( '-passout' "${args['passphrase']}" )
+    params+=( "${args['keylength']}" )
+
+    #shellcheck disable=SC2086
+    echo -e "${BLUE}Generate key file:${RESET} '$(basename ${args['key_file']})'" >&2
+    "$OPENSSL" genrsa "${params[@]}"
+
+    # -------------------------------
+    # save text info for key
+    gen_certs::displayPem "${args['key_file']}" "${args['passphrase']:-}"
+}
+
+#------------------------------------------------------------------------------
+function gen_certs::genPks12() {
+
+    #shellcheck disable=SC2178
+    local -n args="${1:?}"
+
+    # verify mandatory params
+    for key in 'cfg_file' 'section' 'key_file' 'crt_file';do
+        [ "${args[$key]:-}" ] || gen_certs::die "NULL '$key' passed in ${1}"
+    done
+
+    # create arg list for openssl
+    local -a params=( '-export' )
+    for key in "${!args[@]}";do
+        case "$key" in
+           key_file)   params+=( '-inkey' "${args['key_file']}" );;
+           crt_file)   params+=( '-in' "${args['crt_file']}" );;
+           certfile)   params+=( '-config' "${args['config']}" );;
+           pks12)      params+=( '-out' "${args['pks12']}" );;
+        esac
+    done
+    [ "${args['passphrase']:-}" ] && params+=( '-passout' "${args['passphrase']}" )
+
+    #shellcheck disable=SC2086
+    echo -e "${BLUE}Generating PKS: ${RESET}'${pks12}'" >&2
+    "$OPENSSL" pkcs12 "${params[@]}"
+}
+
+#------------------------------------------------------------------------------
+function gen_certs::genRootCertificate() {
+
+    # -------------------------------
+    # first generate a root CA key
+    gen_certs::genKey "$@"
+
+    # -------------------------------
+    #shellcheck disable=SC2178
+    local -n args="${1:?}"
+
+    # verify mandatory params
+    for key in 'cfg_file' 'section' 'key_file' 'crt_file';do
+        [ "${args[$key]:-}" ] || gen_certs::die "NULL '$key' passed in ${1}"
+    done
+
+    # create arg list for openssl
+    local -a params=( '-x509' '-new' '-noenc' )
+    for key in "${!args[@]}";do
+        case "$key" in
+           cfg_file)   params+=( '-config' "${args['cfg_file']}" );;
+           section)    params+=( '-section' "${args['section']}" );;
+           key_file)   params+=( '-key' "${args['key_file']}" );;
+           crt_file)   params+=( '-out' "${args['crt_file']}" );;
+        esac
+    done
+    [ "${args['passphrase']:-}" ] && params+=( '-passin' "${args['passphrase']}" )
+
+    #shellcheck disable=SC2086
+    echo -e "${BLUE}Create Certificate '$(basename ${args['crt_file']})' & sign with '$(basename ${args['key_file']})'${RESET}" >&2
+    # Sign our root Certificate
+    "$OPENSSL" req "${params[@]}"
+
+    # -------------------------------
+    # save text info for certificate
+    gen_certs::displayPem "${args['crt_file']}" "${args['passphrase']:-}"
+}
+
+#------------------------------------------------------------------------------
+function gen_certs::genServerDHParam() {
+
+    #shellcheck disable=SC2178
+    local -n args="${1:?}"
+
+    # verify mandatory params
+    for key in 'cfg_file' 'dh_file' 'keylength';do
+        [ "${args[$key]:-}" ] || gen_certs::die "NULL '$key' passed in ${1}"
+    done
+
+    # create arg list for openssl
+    local -a params=( )
+    for key in "${!args[@]}";do
+        case "$key" in
+           cfg_file)   params+=( '-inkey' "${args['cfg_file']}" );;
+           dh_file)    params+=( '-out' "${args['dh_file']}" );;
+        esac
+    done
+    params+=( "${args['keylength']}" )
+
+    #shellcheck disable=SC2086
+    echo -e "${BLUE}Generating PKS: ${RESET}'${args['dh_file']}'" >&2
+    "$OPENSSL" dhparam "${params[@]}"
+
+    # -------------------------------
+    # save text info for dh_file
+    gen_certs::displayPem "${args['dh_file']}"
+}
+
+#------------------------------------------------------------------------------
+function gen_certs::onExit() {
+
+    [ "${TMP_DIR:-}" ] || return
+    [ -d "${TMP_DIR}" ] || return
+    [ "${TMP_DIR}" = '/' ] && return
+    rm -rf "${TMP_DIR}" ||:
+}
+
+#------------------------------------------------------------------------------
+function gen_certs::prepareEnvironment() {
+
+set -ve
+
+    # Prepare Environment
+    export MSYS_NO_PATHCONV=1
+    export MSYS2_ENV_CONV_EXCL='*'
+    [ -d "$MYCA_DIR" ] && rm -rf "$MYCA_DIR"
+    mkdir -p "$MYCA_DIR"/{certs,crl,newcerts,private,csr}
+    mkdir -p "$MYCA_INTERMITTENT_DIR"/{certs,crl,newcerts,private,csr}
+    chmod 700 "$MYCA_DIR"/private
+    chmod 700 "$MYCA_INTERMITTENT_DIR"/private
+    touch "$MYCA_DIR"/index.txt
+    touch "$MYCA_INTERMITTENT_DIR"/index.txt
+    echo 1000 > "$MYCA_DIR"/serial
+    echo 1000 > "$MYCA_INTERMITTENT_DIR"/serial
+    echo 1000 > "$MYCA_INTERMITTENT_DIR"/crlnumber
+
+set +ve
+}
+
+#------------------------------------------------------------------------------
+function gen_certs::run() {
+  {
+    echo -en "$GREY"
+    for p in "$@"; do
+      printf '%s ' "$p"
+    done
+    echo -e "$RESET"
+  } >&2
+  "$@"
+}
+
+if [ "${SHOW_OPENSSL:-1}" -ne 1 ]; then
+   function RUN() {
+     gen_certs::run 'openssl' "$@"
+   }
+   declare -r OPENSSL='RUN'
+else
+   declare -r OPENSSL='openssl'
+fi
+
+#------------------------------------------------------------------------------
+function gen_certs::title() {
+
+    local -r title="${1:?}"
+
+    echo -e '\n\n-------------------------------------------------------------\n\n'
+    echo -e "${WHITE}${title}${RESET}"
+}
+
+#------------------------------------------------------------------------------
+function gen_certs::verifyCertificate() {
+
+    local -r root_crt="${1:?}"
+    local -r certificate="${2:?}"
+
+    #shellcheck disable=SC2086
+    echo -e "${BLUE}Verifying Certificate: ${RESET}'${certificate}'" >&2
+
+    [ -f "$root_crt" ] || gen_certs::die "Verify failed. '${root_crt}' does not exist."
+    [ -f "$certificate" ] || gen_certs::die "Verify failed. '${certificate}' does not exist."
+
+#    "$OPENSSL" verify -verbose -show_chain -no-CAstore -CAfile "$root_crt" "$certificate"
+    "$OPENSSL" verify -verbose -CAfile "$root_crt" -show_chain "$certificate"
+}
+
+#------------------------------------------------------------------------------
+#------------------------------------------------------------------------------

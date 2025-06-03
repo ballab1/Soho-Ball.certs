@@ -1,0 +1,7 @@
+certs
+myCA
+k8s
+*.log
+**/*.old
+soho_ball.cfg
+init.sh

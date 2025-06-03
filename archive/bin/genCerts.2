@@ -1,0 +1,171 @@
+#!/bin/bash
+
+# Certificate generation process consists of three steps:
+#    (1) generate a strong private key
+#    (2) create a Certificate Signing Request (CSR) and send it to a CA
+#    (3) install the CA-provided certificate in your web server
+
+
+declare -ri KEYLENGTH=2048
+declare -ri VALID_DAYS=300065
+declare -r PASSPHRASE='pass:wxyz'
+declare -r CERTS_DIR=~/.inf/ssl
+
+declare TMP_DIR
+declare CA_PASS_SR1
+
+
+declare -r PGM_DIR="$(readlink -f "$(dirname "${BASH_SOURCE[0]}")")"
+
+
+function getConfig() {
+
+    local tmp_script="${TMP_DIR}/my.conf"
+
+cat << EOF > "$tmp_script" 
+[ req ]
+default_bits       = $KEYLENGTH
+default_md         = sha256
+distinguished_name = dn
+prompt = no
+
+[ dn ]
+C = US
+OU = "Soho-Ball"
+CN = "Ballantyne"
+
+[ root_exts ]
+basicConstraints = critical, CA:true
+subjectKeyIdentifier = hash
+keyUsage = keyCertSign, cRLSign
+authorityKeyIdentifier = keyid:always, issuer
+
+[ req_ext ]
+subjectAltName = @alt_names
+
+[ server_exts ]
+basicConstraints = critical, CA:false
+subjectKeyIdentifier = hash
+#extendedKeyUsage = serverAuth, clientAuth
+extendedKeyUsage = serverAuth
+keyUsage = keyEncipherment, dataEncipherment, digitalSignature
+authorityKeyIdentifier = keyid, issuer
+subjectAltName = @alt_names
+
+[ alt_names ]
+DNS.1 = s2.ubuntu.home
+DNS.2 = s3.ubuntu.home
+DNS.3 = s4.ubuntu.home
+DNS.4 = s5.ubuntu.home
+DNS.5 = s6.ubuntu.home
+DNS.6 = s7.ubuntu.home
+DNS.7 = s8.ubuntu.home
+DNS.8 = wdmycloud.home
+DNS.9 = nas.home
+DNS.10 = *.ubuntu.home
+DNS.11 = *.home
+IP.1 = 127.0.0.1
+EOF
+    echo "$tmp_script"
+}
+
+function onExit() {
+    [ "${TMP_DIR:-}" ] || return
+    [ -d "${TMP_DIR}" ] || return
+    [ "${TMP_DIR}" = '/' ] && return
+    [ -e "$CA_PASS_SR1" ] && rm "$CA_PASS_SR1"
+    rm -rf "${TMP_DIR}" ||:
+}
+
+
+function main() {
+
+    # Use the Unofficial Bash Strict Mode
+    set -o errexit
+    set -o nounset
+    set -o pipefail
+    IFS=$'\n\t'
+
+
+    if [ ! -e "${PGM_DIR}/trap.bashlib" ] || [ ! -e "${PGM_DIR}/term.bashlib" ]; then
+        echo 'Unable to load libraries' >&2
+        exit
+    fi
+
+    source "${PGM_DIR}/trap.bashlib" 
+    source "${PGM_DIR}/term.bashlib" 
+    trap onExit EXIT
+
+    local -r CA_PASS_KEY="${CERTS_DIR}/root.key"
+    local -r CA_ROOT_KEY="${CERTS_DIR}/root.key"
+    local -r CA_ROOT_CRT="${CERTS_DIR}/root.crt"
+    local -r SERVER_KEY="${CERTS_DIR}/server.key"
+    local -r SERVER_CSR="${CERTS_DIR}/server.csr"
+    local -r SERVER_CRT="${CERTS_DIR}/server.crt"
+    local -r PARAM_PEM="${CERTS_DIR}/dhparam.pem"
+    local -r SOHOBALL_PEM="${CERTS_DIR}/soho-ball.pem"
+    local -r SOHOBALL_PKS="${CERTS_DIR}/soho-ball.p12"
+
+    term.log '>> GENERATING SSL CERT\n' 'lt_magenta'
+
+    CA_PASS_SR1="${CERTS_DIR}/root.sr1"
+    TMP_DIR="$(mktemp -d)"
+    local -r CA_PASS_KEY="${TMP_DIR}/server.pass.key"
+    local CFG_FILE="$(getConfig)"
+
+
+    # generate a "$KEYLENGTH" RSA key file for ROOT key
+    openssl genrsa -des3 -passout "$PASSPHRASE" -out "$CA_PASS_KEY" "$KEYLENGTH"
+
+    # use CA_PASS_KEY to generate our ROOT key
+    openssl rsa -passin "$PASSPHRASE" -in "$CA_PASS_KEY" -out "$CA_ROOT_KEY"
+
+    # Signing our root Certificate
+    openssl req -x509 -key "$CA_ROOT_KEY" -days "$VALID_DAYS" -config "$CFG_FILE" -extensions root_exts -out "$CA_ROOT_CRT"
+#------------------------------------------------------------------------------------------
+    # generate a "$KEYLENGTH" RSA key file for Servers
+    echo
+    echo "openssl genrsa -des3 -passout '$PASSPHRASE' -out '$CA_PASS_KEY' $KEYLENGTH"
+    openssl genrsa -des3 -passout "$PASSPHRASE" -out "$CA_PASS_KEY" "$KEYLENGTH"
+
+    # use CA_PASS_KEY to generate our server key
+    echo
+    echo "openssl rsa -passin '$PASSPHRASE' -in '$CA_PASS_KEY' -out '$SERVER_KEY'"
+    openssl rsa -passin "$PASSPHRASE" -in "$CA_PASS_KEY" -out "$SERVER_KEY"
+    # display contents of our key
+#    echo
+#    echo "openssl pkey -text -in '$SERVER_KEY' -noout"
+#    openssl pkey -text -in "$SERVER_KEY" -noout
+
+    echo
+    echo "openssl dhparam $KEYLENGTH -out '$PARAM_PEM'"
+#    openssl dhparam "$KEYLENGTH" -out "$PARAM_PEM"
+
+    # generate a new Certificate Signing Request (CSR) file using our key
+    echo
+    echo "openssl req -new -config '$CFG_FILE' -key '$SERVER_KEY' -extensions req_ext -out '$SERVER_CSR'"
+    openssl req -new -config "$CFG_FILE" -key "$SERVER_KEY" -extensions req_ext -out "$SERVER_CSR"
+    
+    # Signing our own Certificate
+    echo
+#    echo "openssl x509 -req -sha256 -in '$SERVER_CSR' -days $VALID_DAYS -extensions v3_ext -signkey '$SERVER_KEY' -out '$SERVER_CRT'"
+    echo "openssl x509 -req -sha256 -in '$SERVER_CSR' -days $VALID_DAYS -CAkey '$CA_ROOT_KEY' -CA '$CA_ROOT_CRT' -CAcreateserial -extfile '$CFG_FILE' -extensions server_exts -out '$SERVER_CRT'"
+    openssl x509 -req -sha256 -in "$SERVER_CSR" -days "$VALID_DAYS" -CAkey "$CA_ROOT_KEY" -CA "$CA_ROOT_CRT" -CAcreateserial -extfile "$CFG_FILE" -extensions server_exts -out "$SERVER_CRT"
+    [ -e "$CA_PASS_SR1" ] && rm "$CA_PASS_SR1"
+
+    term.log '>> GENERATING SSL CERT ... DONE\n' 'lt_magenta'
+
+    # display contents of our own Certificates
+#    echo
+#    echo "openssl req -in '$SERVER_CSR' -noout -text"
+#    openssl req -in "$SERVER_CSR" -noout -text
+    echo
+    echo "openssl x509 -text -ext extendedKeyUsage -in '$SERVER_CRT' -noout"
+    openssl x509 -text -ext extendedKeyUsage -in "$SERVER_CRT" -noout
+
+    cat "$CA_ROOT_CRT" "$SERVER_CRT" > "$SOHOBALL_PEM" 
+
+    openssl pkcs12 -export -name "Ballantyne" -inkey "$SERVER_KEY" -in "$SERVER_CRT" -certfile "$CA_ROOT_CRT" -out "$SOHOBALL_PKS"
+}
+
+main "$@"

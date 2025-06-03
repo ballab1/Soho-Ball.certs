@@ -1,0 +1,37 @@
+HOST_KEY = CA_PASS_KEY
+HOST_CRT = CA_ROOT_CRT
+CA_ROOT_CRT = SERVER_CRT
+
+HOST_KEY = SERVER_KEY
+HOST_CRT = SERVER_CRT
+HOST_CSR = SERVER_CSR
+
+CHAIN_CRT = SOHOBALL_PEM
+
+
+https://cheapsslsecurity.com/blog/generate-wildcard-csr-in-few-minutes/
+====================================================================================
+Filling Out CSR Wildcard
+While generating CSR wildcard, you’ll be asked to enter a series of details. You’ll need to provide the following details:
+
+Common Name Wildcard: This is your domain’s complete name.
+Organization Name: This is the legal name of your company.
+Organization Unit: This is the specific department within your company that you belong to.
+Your company’s location, including the state/province and country of origin.
+Company email address.
+2048-bit root length.
+SHA-2 signature algorithm.
+The best aspect of a Comodo wildcard certificate is that it allows you to secure unlimited sub-domains in addition to the primary domain. All you have to do is place an asterisk ahead of the domain name when filling out the CSR wildcard.
+
+For example, if you’re registering the domain website.com, you’ll have to enter *.website.com. This will ensure that you can add any subdomains you want. Furthermore, if you want to add more subdomains later during the certificate’s lifecycle, you can do that as well.
+
+How to Generate CSR for Wildcard Certificate?
+You can create wildcard certificate CSR using OpenSSL, which is the most commonly used platform for CSR generation. It can be done via the following steps:
+
+Step 1: Access the terminal client in your web server.
+Step 2: Type the following: openssl req –new –newkey rsa:2048 –nodes –keyout server.key –out server.csr
+Step 3: Enter the domain name, accompanied with the asterisk as illustrated earlier.
+Step 4: Enter all of the organization’s details.
+Step 5: You’re done! Once you enter the aforementioned details, you would have created a CSR for wildcard.
+
+Once you create the wildcard CSR, be sure to also keep the Private Key in the same machine as the generated CSR.

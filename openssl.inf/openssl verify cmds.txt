@@ -1,0 +1,15 @@
+  916  openssl verify -verbose -CAfile intermediate_ca.crt server.crt
+  917  openssl verify -verbose -CAfile intermediateCA_chain.crt server.crt
+  918  openssl verify -verbose -CAfile root.crt -partial_chain intermediate_ca.crt server.crt
+  919  openssl verify -verbose -partial_chain intermediate_ca.crt server.crt
+  920  openssl verify -verbose -CAfile intermediate_ca.crt -partial_chain server.crt
+  922  openssl verify -verbose -partial_chain -CAfile intermediateCA_chain.crt server.crt
+  928  openssl verify -verbose -CAfile intermediateCA_chain.crt server.crt
+  930  openssl verify -verbose -no-CAstore -partial_chain -show_chain -CAfile intermediateCA_chain.crt server.crt
+  931  openssl verify -verbose -show_chain -no-CAstore -partial_chain -CAfile intermediateCA_chain.crt server.crt
+  980  openssl verify -verbose -show_chain -no-CAstore -CAfile root.crt intermediate_ca.crt
+  981  openssl verify -verbose -show_chain -CAfile root.crt intermediate_ca.crt
+  982  openssl verify -verbose -CAfile root.crt -show_chain intermediateCA_chain.crt
+       openssl verify -verbose -CAfile intermediateCA_chain.crt -show_chain server.crt
+
+  929  openssl verify --help

@@ -1,0 +1,3 @@
+Soho-Ball_CA/**               filter=git-crypt diff=git-crypt text
+archive/certs.*               filter=git-crypt diff=git-crypt text
+
