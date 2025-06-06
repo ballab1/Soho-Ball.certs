@@ -208,7 +208,7 @@ function gen_certs::genCertificateSigningRequest() {
     local -n args="${1:?}"
 
     # verify mandatory params
-    for key in 'cfg_file' 'key_file' 'csr_extns' 'csr_file';do
+    for key in 'cfg_file' 'key_file' 'csr_extns' 'csr_file' 'subject';do
         [ "${args[$key]:-}" ] || gen_certs::die "NULL '$key' passed in '${1}'"
     done
 
@@ -220,6 +220,7 @@ function gen_certs::genCertificateSigningRequest() {
            csr_file)   params+=( '-out' "${args['csr_file']}" );;
            csr_extns)  params+=( '-section' "${args['csr_extns']}" );;
            cfg_file)   params+=( '-config' "${args['cfg_file']}" );;
+           subject)    params+=( '-subj' "$(gen_certs::subject "${args['subject']}")" );;
         esac
     done
     [ "${args['passphrase']:-}" ] && params+=( '-passin' "${args['passphrase']}" )
@@ -259,7 +260,7 @@ function gen_certs::genConfig() {
     local -n args="${1:?}"
 
     # verify mandatory params
-    for key in 'cfg_file' 'ca_root_crt' 'ca_root_key' 'intermediate_ca_1_crt' 'intermediate_ca_1_key' 'intermediate_ca_2_crt' 'intermediate_ca_2_key';do
+    for key in 'config' 'cfg_file';do
         [ "${args[$key]:-}" ] || gen_certs::die "NULL '$key' passed in '${1}'"
     done
 
@@ -273,181 +274,7 @@ function gen_certs::genConfig() {
     #   This enables proper CA management.
 
     mkdir -p "$(dirname "$cfg_file")" ||:
-    cat << EOF > "$cfg_file"
-[ ca ]
-default_ca = rootca
-
-[ rootca ]
-dir                 = $MYCA_DIR
-database            = \$dir/index.txt
-serial              = \$dir/serial
-new_certs_dir       = \$dir/newcerts
-certificate         = ${args['ca_root_crt']}
-private_key         = ${args['ca_root_key']}
-default_days        = $VALID_DAYS
-default_md          = sha256
-default_bits        = $KEYLENGTH
-distinguished_name  = rootca_distinguished_name
-x509_extensions     = v3_rootca
-prompt              = no
-policy              = policy_match  # or policy_anything / policy_loose
-
-[ policy_match ]
-countryName         = match
-stateOrProvinceName = optional
-organizationName    = match
-commonName          = supplied
-
-[ intermediate_ca ]
-dir                = $MYCA_INTERMITTENT_DIR
-database           = \$dir/index.txt
-serial             = \$dir/serial
-new_certs_dir      = \$dir/newcerts
-certificate        = ${args['intermediate_ca_1_crt']}
-private_key        = ${args['intermediate_ca_1_key']}
-default_md         = sha256
-policy             = policy_loose
-default_days       = $VALID_DAYS
-default_bits       = $KEYLENGTH
-x509_extensions    = v3_rootca
-distinguished_name = intermediate_distinguished_name
-prompt             = no
-
-[ intermediate_ca_2 ]
-dir                = $MYCA_INTERMITTENT_DIR
-database           = \$dir/index.txt
-serial             = \$dir/serial
-new_certs_dir      = \$dir/newcerts
-certificate        = ${args['intermediate_ca_2_crt']}
-private_key        = ${args['intermediate_ca_2_key']}
-default_md         = sha256
-policy             = policy_loose
-default_days       = $VALID_DAYS
-default_bits       = $KEYLENGTH
-x509_extensions    = v3_rootca
-distinguished_name = intermediate_2_distinguished_name
-prompt             = no
-
-[ v3_csr ]
-default_days       = $VALID_DAYS
-default_md         = sha256
-default_bits       = $KEYLENGTH
-x509_extensions    = v3_rootca
-#distinguished_name = server_distinguished_name
-prompt             = no
-
-[ v3_req ]
-default_days       = $VALID_DAYS
-default_md         = sha256
-default_bits       = $KEYLENGTH
-x509_extensions    = v3_rootca
-distinguished_name = distinguished_name
-prompt             = no
-
-[ v3_req2 ]
-default_days       = $VALID_DAYS
-default_md         = sha256
-default_bits       = $KEYLENGTH
-x509_extensions    = v3_rootca
-distinguished_name = server_distinguished_name
-prompt             = no
-
-[ v3_req2_2 ]
-default_days       = $VALID_DAYS
-default_md         = sha256
-default_bits       = $KEYLENGTH
-x509_extensions    = v3_rootca
-distinguished_name = server_2_distinguished_name
-prompt             = no
-
-[ v3_rootca ]
-basicConstraints       = critical, CA:true
-subjectKeyIdentifier   = hash
-keyUsage               = critical, keyCertSign, cRLSign
-authorityKeyIdentifier = keyid:always, issuer:always
-crlDistributionPoints  = URI:http://example.home/crl.pem
-1.3.6.1.5.5.7.1.9      = ASN1:NULL
-
-[ intermediate_exts ]
-basicConstraints        = critical, CA:false
-subjectKeyIdentifier    = hash
-#authorityKeyIdentifier = keyid, issuer
-#extendedKeyUsage       = serverAuth, clientAuth
-extendedKeyUsage        = serverAuth
-keyUsage                = keyEncipherment, dataEncipherment, digitalSignature
-
-[ server_exts ]
-basicConstraints        = critical, CA:false
-subjectKeyIdentifier    = hash
-#authorityKeyIdentifier = keyid, issuer
-#extendedKeyUsage       = serverAuth, clientAuth
-extendedKeyUsage        = serverAuth
-keyUsage                = keyEncipherment, dataEncipherment, digitalSignature
-subjectAltName          = @alt_names
-
-[ rootca_distinguished_name ]
-countryName             = US
-stateOrProvinceName     = Massachusetts
-localityName            = Mansfield
-organizationName        = soho_ball
-organizationalUnitName  = home
-commonName              = Ballantyne home-network CA
-emailAddress            = ballantyne.robert@gmail.com
-
-[ intermediate_distinguished_name ]
-countryName             = US
-stateOrProvinceName     = Massachusetts
-localityName            = Mansfield
-organizationName        = soho_ball
-organizationalUnitName  = home
-commonName              = Ballantyne k8s-backend Intermediate CA
-emailAddress            = ballantyne.robert@gmail.com
-
-[ intermediate_2_distinguished_name ]
-countryName             = US
-stateOrProvinceName     = Massachusetts
-localityName            = Mansfield
-organizationName        = soho_ball
-organizationalUnitName  = home
-commonName              = Ballantyne k8s-frontend Intermediate CA
-emailAddress            = ballantyne.robert@gmail.com
-
-[ server_distinguished_name ]
-countryName             = US
-stateOrProvinceName     = Massachusetts
-localityName            = Mansfield
-organizationName        = soho_ball
-organizationalUnitName  = home
-commonName              = Ballantyne k8s-backend
-emailAddress            = ballantyne.robert@gmail.com
-
-[ server_2_distinguished_name ]
-countryName             = US
-stateOrProvinceName     = Massachusetts
-localityName            = Mansfield
-organizationName        = soho_ball
-organizationalUnitName  = home
-commonName              = Ballantyne k8s-frontend
-emailAddress            = ballantyne.robert@gmail.com
-
-[ distinguished_name ]
-countryName             = US
-stateOrProvinceName     = Massachusetts
-localityName            = Mansfield
-organizationName        = soho_ball
-organizationalUnitName  = home
-commonName              = Ballantyne home
-emailAddress            = ballantyne.robert@gmail.com
-
-[ alt_names ]
-DNS.1 = *.home
-DNS.2 = *.ubuntu.home
-DNS.3 = *.k8s.home
-DNS.4 = *.prod.k8s.home
-DNS.5 = *.dev.k8s.home
-IP.1  = 127.0.0.1
-
-EOF
+    echo "${args['config']}" > "$cfg_file"
 }
 
 #------------------------------------------------------------------------------
@@ -575,7 +402,7 @@ function gen_certs::genRootCertificate() {
     local -n args="${1:?}"
 
     # verify mandatory params
-    for key in 'cfg_file' 'section' 'key_file' 'crt_file';do
+    for key in 'cfg_file' 'section' 'key_file' 'crt_file' 'subject';do
         [ "${args[$key]:-}" ] || gen_certs::die "NULL '$key' passed in ${1}"
     done
 
@@ -584,6 +411,7 @@ function gen_certs::genRootCertificate() {
     for key in "${!args[@]}";do
         case "$key" in
            cfg_file)   params+=( '-config' "${args['cfg_file']}" );;
+           subject)    params+=( '-subj' "$(gen_certs::subject "${args['subject']}")" );;
            section)    params+=( '-section' "${args['section']}" );;
            key_file)   params+=( '-key' "${args['key_file']}" );;
            crt_file)   params+=( '-out' "${args['crt_file']}" );;
@@ -650,9 +478,8 @@ set -ve
     export MSYS2_ENV_CONV_EXCL='*'
     [ -d "$MYCA_DIR" ] && rm -rf "$MYCA_DIR"
     mkdir -p "$MYCA_DIR"/{certs,crl,newcerts,private,csr}
-    mkdir -p "$MYCA_INTERMITTENT_DIR"/{certs,crl,newcerts,private,csr}
+    mkdir -p "$MYCA_INTERMITTENT_DIR"
     chmod 700 "$MYCA_DIR"/private
-    chmod 700 "$MYCA_INTERMITTENT_DIR"/private
     touch "$MYCA_DIR"/index.txt
     touch "$MYCA_INTERMITTENT_DIR"/index.txt
     echo 1000 > "$MYCA_DIR"/serial
@@ -690,6 +517,28 @@ function gen_certs::title() {
 
     echo -e '\n\n-------------------------------------------------------------\n\n'
     echo -e "${WHITE}${title}${RESET}"
+}
+
+#------------------------------------------------------------------------------
+function gen_certs::subject() {
+
+    local -r commonName="${1:?}"
+
+    local countryName='US'
+    local stateOrProvinceName='Massachusetts'
+    local localityName='Mansfield'
+    local organizationName='soho_ball'
+    local organizationalUnitName='home'
+    local emailAddress='bob.ballantyne@gmail.com'
+
+    printf '/C=%s/ST=%s/L=%s/O=%s/OU=%s/CN=%s/emailAddress=%s' \
+             "$countryName" \
+             "$stateOrProvinceName" \
+             "$localityName" \
+             "$organizationName" \
+             "$organizationalUnitName" \
+             "$commonName" \
+             "$emailAddress"
 }
 
 #------------------------------------------------------------------------------
