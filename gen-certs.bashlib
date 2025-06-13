@@ -333,7 +333,6 @@ default_days       = $VALID_DAYS
 default_md         = sha256
 default_bits       = $KEYLENGTH
 x509_extensions    = v3_rootca
-#distinguished_name = server_distinguished_name
 prompt             = no
 
 [ v3_req ]
@@ -650,9 +649,8 @@ set -ve
     export MSYS2_ENV_CONV_EXCL='*'
     [ -d "$MYCA_DIR" ] && rm -rf "$MYCA_DIR"
     mkdir -p "$MYCA_DIR"/{certs,crl,newcerts,private,csr}
-    mkdir -p "$MYCA_INTERMITTENT_DIR"/{certs,crl,newcerts,private,csr}
+    mkdir -p "$MYCA_INTERMITTENT_DIR"
     chmod 700 "$MYCA_DIR"/private
-    chmod 700 "$MYCA_INTERMITTENT_DIR"/private
     touch "$MYCA_DIR"/index.txt
     touch "$MYCA_INTERMITTENT_DIR"/index.txt
     echo 1000 > "$MYCA_DIR"/serial

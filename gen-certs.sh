@@ -33,13 +33,13 @@ declare -r ca_root_crt="${CA_ROOT_CRT:-${MYCA_DIR}/certs/SohoBall_CA.crt}"
 #shellcheck disable=SC2034
 declare -r ca_root_key="${CA_ROOT_KEY:-${MYCA_DIR}/private/SohoBall_CA.key}"
 #shellcheck disable=SC2034
-declare -r intermediate_ca_1_crt="${INTERMEDIATE_CA_1_CRT:-${MYCA_INTERMITTENT_DIR}/certs/SohoBall-K8sBackend_CA.crt}"
+declare -r intermediate_ca_1_crt="${INTERMEDIATE_CA_1_CRT:-${MYCA_DIR}/certs/SohoBall-K8sBackend_CA.crt}"
 #shellcheck disable=SC2034
-declare -r intermediate_ca_1_key="${INTERMEDIATE_CA_1_KEY:-${MYCA_INTERMITTENT_DIR}/private/SohoBall-K8sBackend_CA.key}"
+declare -r intermediate_ca_1_key="${INTERMEDIATE_CA_1_KEY:-${MYCA_DIR}/private/SohoBall-K8sBackend_CA.key}"
 #shellcheck disable=SC2034
-declare -r intermediate_ca_2_crt="${INTERMEDIATE_CA_1_CRT:-${MYCA_INTERMITTENT_DIR}/certs/SohoBall-K8sFrontend_CA.crt}"
+declare -r intermediate_ca_2_crt="${INTERMEDIATE_CA_1_CRT:-${MYCA_DIR}/certs/SohoBall-K8sFrontend_CA.crt}"
 #shellcheck disable=SC2034
-declare -r intermediate_ca_2_key="${INTERMEDIATE_CA_1_KEY:-${MYCA_INTERMITTENT_DIR}/private/SohoBall-K8sFrontend_CA.key}"
+declare -r intermediate_ca_2_key="${INTERMEDIATE_CA_1_KEY:-${MYCA_DIR}/private/SohoBall-K8sFrontend_CA.key}"
 
 
 #shellcheck disable=SC2034
@@ -97,9 +97,9 @@ gen_certs::title 'Create Intermediate CA Certificate, CSR and Key'
 declare -rA INTERMEDIATE_CA_1=( ['signing_key']="${CA_ROOT['crt_file']}"
                                 ['key_file']="$intermediate_ca_1_key"
                                 ['crt_file']="$intermediate_ca_1_crt"
-                                ['csr_file']="${INTERMEDIATE_CA_1_CSR:-${MYCA_INTERMITTENT_DIR}/csr/SohoBall-K8sBackend_CA.csr}"
-                                ['chain']="${INTERMEDIATE_CA_1_CHAIN:-${MYCA_INTERMITTENT_DIR}/certs/SohoBall-K8sBackend_CA-Chain.crt}"
-#                                ['pks']="${INTERMEDIATE_CA_2_PKS:-${MYCA_INTERMITTENT_DIR}/SohoBall-K8sBackend_CA.pks}")
+                                ['csr_file']="${INTERMEDIATE_CA_1_CSR:-${MYCA_DIR}/csr/SohoBall-K8sBackend_CA.csr}"
+                                ['chain']="${INTERMEDIATE_CA_1_CHAIN:-${MYCA_DIR}/certs/SohoBall-K8sBackend_CA-Chain.crt}"
+#                                ['pks']="${INTERMEDIATE_CA_2_PKS:-${MYCA_DIR}/certs/SohoBall-K8sBackend_CA.pks}")
                                 ['cipher']="$CIPHER"
                                 ['csr_extns']='intermediate_ca'
                                 ['crt_extns']='intermediate_exts'
@@ -113,10 +113,10 @@ gen_certs::genIntermediateCertificate 'INTERMEDIATE_CA_1'
 gen_certs::title 'Issue a Certificate for a Server based on intermediate CA #1'
 #shellcheck disable=SC2034
 declare -rA INTERMEDIATE_CA_1_SERVER=( ['signing_key']="${INTERMEDIATE_CA_1['chain']}"
-                                       ['key_file']="${INTERMEDIATE_CA_1_SERVER_KEY:-${MYCA_INTERMITTENT_DIR}/private/SohoBall_BE-server.key}"
-				       ['crt_file']="${INTERMEDIATE_CA_1_SERVER_CRT:-${MYCA_INTERMITTENT_DIR}/certs/SohoBall_BE-server.crt}"
-                                       ['csr_file']="${INTERMEDIATE_CA_1_SERVER_CSR:-${MYCA_INTERMITTENT_DIR}/csr/SohoBall_BE-server.csr}"
-#                                       ['dh_file']="${INTERMEDIATE_CA_1_SERVER_DHPARAM:-${MYCA_DIR}/SohoBall_BE-server.dhparam.dh}"
+                                       ['key_file']="${INTERMEDIATE_CA_1_SERVER_KEY:-${MYCA_DIR}/private/SohoBall_BE-server.key}"
+				       ['crt_file']="${INTERMEDIATE_CA_1_SERVER_CRT:-${MYCA_DIR}/certs/SohoBall_BE-server.crt}"
+                                       ['csr_file']="${INTERMEDIATE_CA_1_SERVER_CSR:-${MYCA_DIR}/csr/SohoBall_BE-server.csr}"
+#                                       ['dh_file']="${INTERMEDIATE_CA_1_SERVER_DHPARAM:-${MYCA_DIR}/certs/SohoBall_BE-server.dhparam.dh}"
                                        ['csr_extns']='v3_req2'
                                        ['crt_extns']='server_exts'
                                        ['keylength']="$KEYLENGTH"
@@ -131,9 +131,9 @@ gen_certs::title 'Create Intermediate CA_2 Certificate, CSR and Key'
 declare -rA INTERMEDIATE_CA_2=( ['signing_key']="${CA_ROOT['crt_file']}"
                                 ['key_file']="$intermediate_ca_2_key"
                                 ['crt_file']="$intermediate_ca_2_crt"
-                                ['csr_file']="${INTERMEDIATE_CA_2_CSR:-${MYCA_INTERMITTENT_DIR}/csr/SohoBall-K8sFrontend_CA.csr}"
-                                ['chain']="${INTERMEDIATE_CA_2_CHAIN:-${MYCA_INTERMITTENT_DIR}/certs/SohoBall-K8sFrontend_CA-Chain.crt}"
-#                                ['pks']="${INTERMEDIATE_CA_2_PKS:-${MYCA_INTERMITTENT_DIR}/SohoBall-K8sFrontend_CA.pks}")
+                                ['csr_file']="${INTERMEDIATE_CA_2_CSR:-${MYCA_DIR}/csr/SohoBall-K8sFrontend_CA.csr}"
+                                ['chain']="${INTERMEDIATE_CA_2_CHAIN:-${MYCA_DIR}/certs/SohoBall-K8sFrontend_CA-Chain.crt}"
+#                                ['pks']="${INTERMEDIATE_CA_2_PKS:-${MYCA_DIR}/certs/SohoBall-K8sFrontend_CA.pks}")
                                 ['cipher']="$CIPHER"
                                 ['csr_extns']='intermediate_ca_2'
                                 ['crt_extns']='intermediate_exts'
@@ -147,10 +147,10 @@ gen_certs::genIntermediateCertificate 'INTERMEDIATE_CA_2'
 gen_certs::title 'Issue a Certificate for a Server based on intermediate CA #2'
 #shellcheck disable=SC2034
 declare -rA INTERMEDIATE_CA_2_SERVER=( ['signing_key']="${INTERMEDIATE_CA_2['chain']}"
-                                       ['key_file']="${INTERMEDIATE_CA_2_SERVER_KEY:-${MYCA_INTERMITTENT_DIR}/private/SohoBall_FE-server.key}"
-				       ['crt_file']="${INTERMEDIATE_CA_2_SERVER_CRT:-${MYCA_INTERMITTENT_DIR}/certs/SohoBall_FE-server.crt}"
-                                       ['csr_file']="${INTERMEDIATE_CA_2_SERVER_CSR:-${MYCA_INTERMITTENT_DIR}/csr/SohoBall_FE-server.csr}"
-#                                       ['dh_file']="${INTERMEDIATE_CA_2_SERVER_DHPARAM:-${MYCA_DIR}/SohoBall_FE-server.dhparam.dh}"
+                                       ['key_file']="${INTERMEDIATE_CA_2_SERVER_KEY:-${MYCA_DIR}/private/SohoBall_FE-server.key}"
+				       ['crt_file']="${INTERMEDIATE_CA_2_SERVER_CRT:-${MYCA_DIR}/certs/SohoBall_FE-server.crt}"
+                                       ['csr_file']="${INTERMEDIATE_CA_2_SERVER_CSR:-${MYCA_DIR}/csr/SohoBall_FE-server.csr}"
+#                                       ['dh_file']="${INTERMEDIATE_CA_2_SERVER_DHPARAM:-${MYCA_DIR}/certs/SohoBall_FE-server.dhparam.dh}"
                                        ['csr_extns']='v3_req2_2'
                                        ['crt_extns']='server_exts'
                                        ['keylength']="$KEYLENGTH"
