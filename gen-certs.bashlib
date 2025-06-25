@@ -100,6 +100,25 @@ function gen_certs::displayCertificateSigningRequest() {
 }
 
 #------------------------------------------------------------------------------
+function gen_certs::displayDhContents() {
+
+    [ "${SHOW_OPENSSL:-0}" -ne 0 ] && return
+
+    local -r dh="${1:?}"
+    local -r passphrase="${2:-}"
+    local -a args=()
+
+    [ -f "$dh" ] || gen_certs::die "Display DHPARAM failed. '${dh}' does not exist."
+
+    printf '\n\n%s\n' "$dh"
+
+    [ "${passphrase:-}" ] && args=('-passin' "${passphrase}")
+
+    # display contents of our key
+    "$OPENSSL" dhparam -in "$dh" -noout -text "${args[@]}"
+}
+
+#------------------------------------------------------------------------------
 function gen_certs::displayKeyContents() {
 
     [ "${SHOW_OPENSSL:-0}" -ne 0 ] && return
@@ -137,7 +156,7 @@ function gen_certs::displayPem() {
           gen_certs::displayCertificateSigningRequest "$pem" "$@" > "$out";;
        crt)
           gen_certs::displayCertificateContents "$pem" "$@" > "$out";;
-       dh)
+       dh|pem)
           gen_certs::displayDhContents "$pem" "$@" > "$out";;
        key)
           gen_certs::displayKeyContents "$pem" "$@" > "$out";;
@@ -163,7 +182,7 @@ function gen_certs::genCertificate() {
     local -n args="${1:?}"
 
     # verify mandatory params
-    for key in 'crt_extns' 'csr_file' 'crt_file' 'cfg_file' 'signing_key';do
+    for key in 'crt_extns' 'csr_file' 'key_file' 'crt_file' 'cfg_file';do
         [ "${args[$key]:-}" ] || gen_certs::die "NULL '$key' passed in '${1}'"
     done
 
@@ -171,16 +190,20 @@ function gen_certs::genCertificate() {
     local -a params=( '-batch' '-notext' )
     for key in "${!args[@]}";do
         case "$key" in
+           section)     params+=( '-name' "${args['section']}" );;
+           signing_key) params+=( '-keyfile' "${args['signing_key']}" );;
+           signing_crt) params+=( '-cert' "${args['signing_crt']}" );;
            crt_extns)   params+=( '-extensions' "${args['crt_extns']}" );;
            csr_file)    params+=( '-in' "${args['csr_file']}" );;
-           crt_file)    params+=( '-out' "${args['crt_file']}" );;
            cfg_file)    params+=( '-config' "${args['cfg_file']}" );;
+#           key_file)    params+=( '-key' "${args['key_file']}" );;
+           crt_file)    params+=( '-out' "${args['crt_file']}" );;
         esac
     done
     [ "${args['passphrase']:-}" ] && params+=( '-passin' "${args['passphrase']}" )
 
     #shellcheck disable=SC2086
-    echo -e "${BLUE}Using '$(basename ${args['csr_file']})' CSR, create certificate:${RESET} '$(basename ${args['crt_file']})'" >&2
+    echo -e "${BLUE}Using CSR:'$(basename ${args['csr_file']})', create certificate:${RESET} '$(basename ${args['crt_file']})'" >&2
     "$OPENSSL" ca "${params[@]}"
 
     # -------------------------------
@@ -189,7 +212,9 @@ function gen_certs::genCertificate() {
 
     # -------------------------------
     # verify certificate
-    gen_certs::verifyCertificate "${args['signing_key']}" "${args['crt_file']}"
+    local verify_crt="${args['signing_crt']}"
+    [ "${args['verify_crt']:-}" ] && verify_crt="${args['verify_crt']}"
+    gen_certs::verifyCertificate "$verify_crt" "${args['crt_file']}"
     #   - The resulting "${args['crt_file']}" is now a valid CA-signed certificate.
 
     # -------------------------------
@@ -208,18 +233,23 @@ function gen_certs::genCertificateSigningRequest() {
     local -n args="${1:?}"
 
     # verify mandatory params
-    for key in 'cfg_file' 'key_file' 'csr_extns' 'csr_file';do
+    for key in 'cfg_file' 'csr_extns' 'csr_file';do
         [ "${args[$key]:-}" ] || gen_certs::die "NULL '$key' passed in '${1}'"
     done
+    gen_certs::verify_subject "$1" || gen_certs::die "No valid 'distingushed_name' provided in '${1}'"
 
     # create arg list for openssl
     local -a params=( '-new' )
     for key in "${!args[@]}";do
         case "$key" in
-           key_file)   params+=( '-key' "${args['key_file']}" );;
-           csr_file)   params+=( '-out' "${args['csr_file']}" );;
-           csr_extns)  params+=( '-section' "${args['csr_extns']}" );;
-           cfg_file)   params+=( '-config' "${args['cfg_file']}" );;
+#           signing_key)  params+=( '-CAkey' "${args['signing_key']}" );;
+#           signing_crt)  params+=( '-CA' "${args['signing_crt']}" );;
+           csr_file)     params+=( '-out' "${args['csr_file']}" );;
+           csr_extns)    params+=( '-section' "${args['csr_extns']}" );;
+           cfg_file)     params+=( '-config' "${args['cfg_file']}" );;
+           common_name)  params+=( '-subj' "$(gen_certs::subject "${args['common_name']}")" );;
+           subject)      params+=( '-subj' "${args['subject']}" );;
+           key_file)     params+=( '-key' "${args['key_file']}" );;
         esac
     done
     [ "${args['passphrase']:-}" ] && params+=( '-passin' "${args['passphrase']}" )
@@ -241,15 +271,15 @@ function gen_certs::genChain() {
     local -n args="${1:?}"
 
     # verify mandatory params
-    for key in 'signing_key' 'crt_file' 'chain';do
+    for key in 'signing_crt' 'crt_file' 'chain';do
         [ "${args[$key]:-}" ] || gen_certs::die "NULL '$key' passed in '${1}'"
     done
 
 
     #shellcheck disable=SC2086
     echo -e "${BLUE}Establish the Certificate Chain: ${RESET}'${args['chain']}'" >&2
-    [ "${SHOW_OPENSSL:-0}" -ne 0 ] && (echo -e "${GREY}cat '${args['crt_file']}' '${args['signing_key']}' > '${args['chain']}'${RESET}" >&2)
-    cat "${args['crt_file']}" "${args['signing_key']}" > "${args['chain']}"
+    [ "${SHOW_OPENSSL:-0}" -ne 0 ] && (echo -e "${GREY}cat '${args['crt_file']}' '${args['signing_crt']}' > '${args['chain']}'${RESET}" >&2)
+    cat "${args['signing_crt']}" "${args['crt_file']}" > "${args['chain']}"
 }
 
 #------------------------------------------------------------------------------
@@ -259,7 +289,7 @@ function gen_certs::genConfig() {
     local -n args="${1:?}"
 
     # verify mandatory params
-    for key in 'cfg_file' 'ca_root_crt' 'ca_root_key' 'intermediate_ca_1_crt' 'intermediate_ca_1_key' 'intermediate_ca_2_crt' 'intermediate_ca_2_key';do
+    for key in 'config' 'cfg_file';do
         [ "${args[$key]:-}" ] || gen_certs::die "NULL '$key' passed in '${1}'"
     done
 
@@ -273,181 +303,10 @@ function gen_certs::genConfig() {
     #   This enables proper CA management.
 
     mkdir -p "$(dirname "$cfg_file")" ||:
-    cat << EOF > "$cfg_file"
-[ ca ]
-default_ca = rootca
+    echo "${args['config']}" > "$cfg_file"
 
-[ rootca ]
-dir                 = $MYCA_DIR
-database            = \$dir/index.txt
-serial              = \$dir/serial
-new_certs_dir       = \$dir/newcerts
-certificate         = ${args['ca_root_crt']}
-private_key         = ${args['ca_root_key']}
-default_days        = $VALID_DAYS
-default_md          = sha256
-default_bits        = $KEYLENGTH
-distinguished_name  = rootca_distinguished_name
-x509_extensions     = v3_rootca
-prompt              = no
-policy              = policy_match  # or policy_anything / policy_loose
 
-[ policy_match ]
-countryName         = match
-stateOrProvinceName = optional
-organizationName    = match
-commonName          = supplied
-
-[ intermediate_ca ]
-dir                = $MYCA_INTERMITTENT_DIR
-database           = \$dir/index.txt
-serial             = \$dir/serial
-new_certs_dir      = \$dir/newcerts
-certificate        = ${args['intermediate_ca_1_crt']}
-private_key        = ${args['intermediate_ca_1_key']}
-default_md         = sha256
-policy             = policy_loose
-default_days       = $VALID_DAYS
-default_bits       = $KEYLENGTH
-x509_extensions    = v3_rootca
-distinguished_name = intermediate_distinguished_name
-prompt             = no
-
-[ intermediate_ca_2 ]
-dir                = $MYCA_INTERMITTENT_DIR
-database           = \$dir/index.txt
-serial             = \$dir/serial
-new_certs_dir      = \$dir/newcerts
-certificate        = ${args['intermediate_ca_2_crt']}
-private_key        = ${args['intermediate_ca_2_key']}
-default_md         = sha256
-policy             = policy_loose
-default_days       = $VALID_DAYS
-default_bits       = $KEYLENGTH
-x509_extensions    = v3_rootca
-distinguished_name = intermediate_2_distinguished_name
-prompt             = no
-
-[ v3_csr ]
-default_days       = $VALID_DAYS
-default_md         = sha256
-default_bits       = $KEYLENGTH
-x509_extensions    = v3_rootca
-#distinguished_name = server_distinguished_name
-prompt             = no
-
-[ v3_req ]
-default_days       = $VALID_DAYS
-default_md         = sha256
-default_bits       = $KEYLENGTH
-x509_extensions    = v3_rootca
-distinguished_name = distinguished_name
-prompt             = no
-
-[ v3_req2 ]
-default_days       = $VALID_DAYS
-default_md         = sha256
-default_bits       = $KEYLENGTH
-x509_extensions    = v3_rootca
-distinguished_name = server_distinguished_name
-prompt             = no
-
-[ v3_req2_2 ]
-default_days       = $VALID_DAYS
-default_md         = sha256
-default_bits       = $KEYLENGTH
-x509_extensions    = v3_rootca
-distinguished_name = server_2_distinguished_name
-prompt             = no
-
-[ v3_rootca ]
-basicConstraints       = critical, CA:true
-subjectKeyIdentifier   = hash
-keyUsage               = critical, keyCertSign, cRLSign
-authorityKeyIdentifier = keyid:always, issuer:always
-crlDistributionPoints  = URI:http://example.home/crl.pem
-1.3.6.1.5.5.7.1.9      = ASN1:NULL
-
-[ intermediate_exts ]
-basicConstraints        = critical, CA:false
-subjectKeyIdentifier    = hash
-#authorityKeyIdentifier = keyid, issuer
-#extendedKeyUsage       = serverAuth, clientAuth
-extendedKeyUsage        = serverAuth
-keyUsage                = keyEncipherment, dataEncipherment, digitalSignature
-
-[ server_exts ]
-basicConstraints        = critical, CA:false
-subjectKeyIdentifier    = hash
-#authorityKeyIdentifier = keyid, issuer
-#extendedKeyUsage       = serverAuth, clientAuth
-extendedKeyUsage        = serverAuth
-keyUsage                = keyEncipherment, dataEncipherment, digitalSignature
-subjectAltName          = @alt_names
-
-[ rootca_distinguished_name ]
-countryName             = US
-stateOrProvinceName     = Massachusetts
-localityName            = Mansfield
-organizationName        = soho_ball
-organizationalUnitName  = home
-commonName              = Ballantyne home-network CA
-emailAddress            = ballantyne.robert@gmail.com
-
-[ intermediate_distinguished_name ]
-countryName             = US
-stateOrProvinceName     = Massachusetts
-localityName            = Mansfield
-organizationName        = soho_ball
-organizationalUnitName  = home
-commonName              = Ballantyne k8s-backend Intermediate CA
-emailAddress            = ballantyne.robert@gmail.com
-
-[ intermediate_2_distinguished_name ]
-countryName             = US
-stateOrProvinceName     = Massachusetts
-localityName            = Mansfield
-organizationName        = soho_ball
-organizationalUnitName  = home
-commonName              = Ballantyne k8s-frontend Intermediate CA
-emailAddress            = ballantyne.robert@gmail.com
-
-[ server_distinguished_name ]
-countryName             = US
-stateOrProvinceName     = Massachusetts
-localityName            = Mansfield
-organizationName        = soho_ball
-organizationalUnitName  = home
-commonName              = Ballantyne k8s-backend
-emailAddress            = ballantyne.robert@gmail.com
-
-[ server_2_distinguished_name ]
-countryName             = US
-stateOrProvinceName     = Massachusetts
-localityName            = Mansfield
-organizationName        = soho_ball
-organizationalUnitName  = home
-commonName              = Ballantyne k8s-frontend
-emailAddress            = ballantyne.robert@gmail.com
-
-[ distinguished_name ]
-countryName             = US
-stateOrProvinceName     = Massachusetts
-localityName            = Mansfield
-organizationName        = soho_ball
-organizationalUnitName  = home
-commonName              = Ballantyne home
-emailAddress            = ballantyne.robert@gmail.com
-
-[ alt_names ]
-DNS.1 = *.home
-DNS.2 = *.ubuntu.home
-DNS.3 = *.k8s.home
-DNS.4 = *.prod.k8s.home
-DNS.5 = *.dev.k8s.home
-IP.1  = 127.0.0.1
-
-EOF
+    [ "$(type -t '::__init')" ] && ::__init
 }
 
 #------------------------------------------------------------------------------
@@ -468,7 +327,7 @@ function gen_certs::genIntermediateCertificate() {
     local -n args="${1:?}"
 
     # verify mandatory params
-    for key in 'cfg_file' 'crt_extns' 'csr_file' 'crt_file' 'signing_key' 'chain';do
+    for key in 'cfg_file' 'crt_extns' 'csr_file' 'crt_file' 'chain';do
         [ "${args[$key]:-}" ] || gen_certs::die "NULL '$key' passed in '${1}'"
     done
 
@@ -476,10 +335,14 @@ function gen_certs::genIntermediateCertificate() {
     local -a params=( '-batch' '-notext' )
     for key in "${!args[@]}";do
         case "$key" in
+           section)      params+=( '-name' "${args['section']}" );;
+           signing_key)  params+=( '-keyfile' "${args['signing_key']}" );;
+           signing_crt)  params+=( '-cert' "${args['signing_crt']}" );;
            cfg_file)     params+=( '-config' "${args['cfg_file']}" );;
            crt_extns)    params+=( '-extensions' "${args['crt_extns']}" );;
            csr_file)     params+=( '-in' "${args['csr_file']}" );;
            crt_file)     params+=( '-out' "${args['crt_file']}" );;
+#           key_file)     params+=( '-key' "${args['key_file']}" );;
         esac
     done
     [ "${args['passphrase']:-}" ] && params+=( '-passin' "${args['passphrase']}" )
@@ -496,7 +359,9 @@ function gen_certs::genIntermediateCertificate() {
 
     # -------------------------------
     # verify chain
-    gen_certs::verifyCertificate "${args['signing_key']}" "${args['crt_file']}"
+    local verify_crt="${args['signing_crt']}"
+    [ "${args['verify_crt']:-}" ] && verify_crt="${args['verify_crt']}"
+    gen_certs::verifyCertificate "$verify_crt" "${args['crt_file']}"
     #   - The resulting "${args['crt_file']}" is now a valid CA-signed certificate.
 
     # -------------------------------
@@ -575,18 +440,21 @@ function gen_certs::genRootCertificate() {
     local -n args="${1:?}"
 
     # verify mandatory params
-    for key in 'cfg_file' 'section' 'key_file' 'crt_file';do
+    for key in 'cfg_file' 'section' 'key_file' 'crt_file'; do
         [ "${args[$key]:-}" ] || gen_certs::die "NULL '$key' passed in ${1}"
     done
+    gen_certs::verify_subject "$1" || gen_certs::die "No valid 'distingushed_name' provided in '${1}'"
 
     # create arg list for openssl
     local -a params=( '-x509' '-new' '-noenc' )
     for key in "${!args[@]}";do
         case "$key" in
-           cfg_file)   params+=( '-config' "${args['cfg_file']}" );;
-           section)    params+=( '-section' "${args['section']}" );;
-           key_file)   params+=( '-key' "${args['key_file']}" );;
-           crt_file)   params+=( '-out' "${args['crt_file']}" );;
+           cfg_file)     params+=( '-config' "${args['cfg_file']}" );;
+           common_name)  params+=( '-subj' "$(gen_certs::subject "${args['common_name']}")" );;
+           subject)      params+=( '-subj' "${args['subject']}" );;
+           section)      params+=( '-section' "${args['section']}" );;
+           crt_file)     params+=( '-out' "${args['crt_file']}" );;
+           key_file)     params+=( '-key' "${args['key_file']}" );;
         esac
     done
     [ "${args['passphrase']:-}" ] && params+=( '-passin' "${args['passphrase']}" )
@@ -607,24 +475,41 @@ function gen_certs::genServerDHParam() {
     #shellcheck disable=SC2178
     local -n args="${1:?}"
 
-    # verify mandatory params
-    for key in 'cfg_file' 'dh_file' 'keylength';do
-        [ "${args[$key]:-}" ] || gen_certs::die "NULL '$key' passed in ${1}"
-    done
+    [ "${args['dh_file']:-}" ] || gen_certs::die "NULL 'dh_file' passed in ${1}"
 
-    # create arg list for openssl
-    local -a params=( )
-    for key in "${!args[@]}";do
-        case "$key" in
-           cfg_file)   params+=( '-inkey' "${args['cfg_file']}" );;
-           dh_file)    params+=( '-out' "${args['dh_file']}" );;
-        esac
-    done
-    params+=( "${args['keylength']}" )
+    if [ "${FAST_DHPARAMS:-1}" = 1 ]; then
+        [ -f 'Soho-Ball_CA/certs/dhparam.dh' ] && cp 'Soho-Ball_CA/certs/dhparam.dh' "${args['dh_file']}"
+    fi
 
-    #shellcheck disable=SC2086
-    echo -e "${BLUE}Generating PKS: ${RESET}'${args['dh_file']}'" >&2
-    "$OPENSSL" dhparam "${params[@]}"
+    if [ "${FAST_DHPARAMS:-1}" = 1 ] && [ ! -f "${args['dh_file']}" ]; then
+        local file
+        while read -r file; do
+            if [ ! -f "${args['dh_file']}" ] || [ "$(stat --format='%Y' "$file")" -gt "$(stat --format='%Y' "${args['dh_file']}")" ]; then
+                cp "$file" "${args['dh_file']}"
+            fi
+        done < <(find . -type f -name '*dh*' | grep -v '.inf')
+    fi
+
+    if [ ! -f "${args['dh_file']}" ]; then
+        # verify mandatory params
+        for key in 'cfg_file' 'dh_file' 'keylength';do
+            [ "${args[$key]:-}" ] || gen_certs::die "NULL '$key' passed in ${1}"
+        done
+
+        # create arg list for openssl
+        local -a params=( )
+        for key in "${!args[@]}";do
+            case "$key" in
+               cfg_file)   params+=( '-inkey' "${args['cfg_file']}" );;
+               dh_file)    params+=( '-out' "${args['dh_file']}" );;
+            esac
+        done
+        params+=( "${args['keylength']}" )
+
+        #shellcheck disable=SC2086
+        echo -e "${BLUE}Generating PKS: ${RESET}'${args['dh_file']}'" >&2
+        "$OPENSSL" dhparam "${params[@]}"
+    fi
 
     # -------------------------------
     # save text info for dh_file
@@ -652,10 +537,10 @@ set -ve
     mkdir -p "$MYCA_DIR"/{certs,crl,newcerts,private,csr}
     mkdir -p "$MYCA_INTERMITTENT_DIR"/{certs,crl,newcerts,private,csr}
     chmod 700 "$MYCA_DIR"/private
-    chmod 700 "$MYCA_INTERMITTENT_DIR"/private
     touch "$MYCA_DIR"/index.txt
     touch "$MYCA_INTERMITTENT_DIR"/index.txt
     echo 1000 > "$MYCA_DIR"/serial
+    echo 1000 > "$MYCA_DIR"/crlnumber
     echo 1000 > "$MYCA_INTERMITTENT_DIR"/serial
     echo 1000 > "$MYCA_INTERMITTENT_DIR"/crlnumber
 
@@ -693,6 +578,28 @@ function gen_certs::title() {
 }
 
 #------------------------------------------------------------------------------
+function gen_certs::subject() {
+
+    local -r commonName="${1:?}"
+
+    local countryName='US'
+    local stateOrProvinceName='Massachusetts'
+    local localityName='Mansfield'
+    local organizationName='soho_ball'
+    local organizationalUnitName='home'
+    local emailAddress='bob.ballantyne@gmail.com'
+
+    printf '/C=%s/ST=%s/L=%s/O=%s/OU=%s/CN=%s/emailAddress=%s' \
+             "$countryName" \
+             "$stateOrProvinceName" \
+             "$localityName" \
+             "$organizationName" \
+             "$organizationalUnitName" \
+             "$commonName" \
+             "$emailAddress"
+}
+
+#------------------------------------------------------------------------------
 function gen_certs::verifyCertificate() {
 
     local -r root_crt="${1:?}"
@@ -706,6 +613,34 @@ function gen_certs::verifyCertificate() {
 
 #    "$OPENSSL" verify -verbose -show_chain -no-CAstore -CAfile "$root_crt" "$certificate"
     "$OPENSSL" verify -verbose -CAfile "$root_crt" -show_chain "$certificate"
+}
+
+#------------------------------------------------------------------------------
+function gen_certs::verify_subject() {
+
+    #shellcheck disable=SC2178
+    local -n args="${1:?}"
+
+    # valid if 'subject' contains '/CN=' or '/commonName='
+    if [ "${args['subject']:-}" ]; then
+        local subject="${args['subject']}"
+        [[ "$subject" =~ '/CN=' ]] && return 0
+        [[ "$subject" =~ '/commonName=' ]] && return 0
+
+    # valid if 'common_name' exists
+    elif [ "${args['common_name']:-}" ]; then
+        return 0
+
+    # valid if 'section' in 'cfg_file' refers to 'distinguished_name' which contains '^CN\s+=\s*' or '^commonName\s+=\s*'
+    else
+        return 1
+
+    	cfg_file
+    	section
+        distinguished_name
+
+    fi
+    return 1
 }
 
 #------------------------------------------------------------------------------
