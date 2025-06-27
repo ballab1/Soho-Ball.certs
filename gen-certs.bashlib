@@ -6,7 +6,7 @@
 #    (3) install the CA-provided certificate in your web server
 
 #shellcheck disable=SC2034
-declare -r k8s_NO_ASCII='s|\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[mK]||g'
+declare -r K8S_NO_ASCII='s|\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[mGK]||g'
 declare -r BLUE='\x1b[94m'
 declare -r GREEN='\x1b[32m'
 declare -r GREY='\x1b[90m'
@@ -182,7 +182,7 @@ function gen_certs::genCertificate() {
     local -n args="${1:?}"
 
     # verify mandatory params
-    for key in 'crt_extns' 'csr_file' 'key_file' 'crt_file' 'cfg_file';do
+    for key in 'csr_file' 'key_file' 'crt_file' 'cfg_file';do
         [ "${args[$key]:-}" ] || gen_certs::die "NULL '$key' passed in '${1}'"
     done
 
@@ -519,6 +519,10 @@ function gen_certs::genServerDHParam() {
 #------------------------------------------------------------------------------
 function gen_certs::onExit() {
 
+    # strip ansi chars from logfile
+    local logfile="${0//.sh}.log"
+    [ -f "$logfile" ] && sed -i -E -e "$K8S_NO_ASCII" "$logfile"
+
     [ "${TMP_DIR:-}" ] || return
     [ -d "${TMP_DIR}" ] || return
     [ "${TMP_DIR}" = '/' ] && return
@@ -624,8 +628,8 @@ function gen_certs::verify_subject() {
     # valid if 'subject' contains '/CN=' or '/commonName='
     if [ "${args['subject']:-}" ]; then
         local subject="${args['subject']}"
-        [[ "$subject" =~ '/CN=' ]] && return 0
-        [[ "$subject" =~ '/commonName=' ]] && return 0
+        [[ "$subject" =~ /CN= ]] && return 0
+        [[ "$subject" =~ /commonName= ]] && return 0
 
     # valid if 'common_name' exists
     elif [ "${args['common_name']:-}" ]; then

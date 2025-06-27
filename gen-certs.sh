@@ -20,13 +20,13 @@ function ::files_to_publish() {
     popd &> /dev/null || exit
     rm -rf "${MYCA_DIR}/nginx"
 
-    pushd  "${MYCA_DIR}/k8s" &> /dev/null || exit
-    tar czf ../k8s.tgz ./*
+    pushd  "${MYCA_DIR}/K8S" &> /dev/null || exit
+    tar czf ../K8S.tgz ./*
     popd &> /dev/null || exit
 }
 #------------------------------------------------------------------------------
 function ::__init() {
-    mkdir -p "${MYCA_DIR}/k8s" ||:
+    mkdir -p "${MYCA_DIR}/K8S" ||:
 }
 #------------------------------------------------------------------------------
 
@@ -38,6 +38,7 @@ source "$(dirname "$0")/gen-certs.bashlib"
 trap gen_certs::onExit EXIT
 
 
+{
 echo -e "\\n${MAGENTA}>> GENERATING SSL CERTS${RESET}"
 
 
@@ -49,7 +50,7 @@ declare -ri FAST_DHPARAMS=1
 declare -r CIPHER="${CIPHER:-}"
 declare -r PASSPHRASE="${PASSPHRASE:-}"
 declare -ri KEYLENGTH="${KEYLENGTH:-4096}"
-declare -ri VALID_DAYS="${VALID_DAYS:-300065}"
+declare -ri VALID_DAYS="${VALID_DAYS:-3653}"
 declare -r MYCA_DIR="${MYCA_DIR:-./myCA}"
 declare -r MYCA_INTERMITTENT_DIR="${MYCA_INTERMITTENT_DIR:-${MYCA_DIR}/intermediate}"
 declare -r CONFIG_FILE="${CONFIG_FILE:-${MYCA_DIR}/config.cnf}"
@@ -73,15 +74,20 @@ default_days        = $VALID_DAYS
 default_md          = sha256
 default_bits        = $KEYLENGTH
 prompt              = no
-policy              = policy_match  # or policy_anything / policy_loose
+policy              = policy_match
 x509_extensions     = rootca_x509_extns
-#distinguished_name = distinguished_name   # dynamically generated with unique 'commonName'
 
 [ policy_match ]
-countryName         = match
+countryName         = optional
 stateOrProvinceName = optional
-organizationName    = match
+organizationName    = optional
 commonName          = supplied
+
+[ policy_loose ]
+countryName         = optional
+stateOrProvinceName = optional
+organizationName    = optional
+commonName          = optional
 
 [ rootca_x509_extns ]  # x509_extensions
 basicConstraints       = critical, CA:true
@@ -105,8 +111,6 @@ policy              = policy_match  # or policy_anything / policy_loose
 default_days       = $VALID_DAYS
 default_bits       = $KEYLENGTH
 prompt             = no
-#distinguished_name = distinguished_name   # dynamically generated with unique 'commonName'
-#x509_extensions    = ca_intermediate_x509_exts
 
 [ ca_intermediate_x509_exts ]  # x509_extensions
 basicConstraints       = critical, CA:true
@@ -117,8 +121,6 @@ crlDistributionPoints  = URI:http://example.home/crl.pem
 1.3.6.1.5.5.7.1.9      = ASN1:NULL
 certificatePolicies    = 2.5.29.32.0
 authorityInfoAccess    = OCSP;URI:http://example.home/ocsp
-#extendedKeyUsage        = serverAuth
-#keyUsage                = keyEncipherment, dataEncipherment, digitalSignature
 
 # ---------- parameters for servers ---------------
 [ server_section ]
@@ -126,13 +128,10 @@ default_days       = $VALID_DAYS
 default_md         = sha256
 default_bits       = $KEYLENGTH
 prompt             = no
-#distinguished_name = distinguished_name   # dynamically generated with unique 'commonName'
-#x509_extensions    = server_x509_exts
 
 [ server_x509_exts ]  #x509_extensions for all servers
 basicConstraints        = critical, CA:false
 subjectKeyIdentifier    = hash
-#extendedKeyUsage       = serverAuth, clientAuth
 extendedKeyUsage        = serverAuth
 keyUsage                = keyEncipherment, dataEncipherment, digitalSignature
 subjectAltName          = @alt_names
@@ -144,17 +143,44 @@ stateOrProvinceName     = Massachusetts
 localityName            = Mansfield
 organizationName        = soho_ball
 organizationalUnitName  = home
-#commonName              = TBD      # passed to dynamic '-subj' function
 emailAddress            = ballantyne.robert@gmail.com
 
 [ alt_names ]
 DNS.1 = *.home
 DNS.2 = *.ubuntu.home
-DNS.3 = *.k8s.home
-DNS.4 = *.prod.k8s.home
-DNS.5 = *.dev.k8s.home
+DNS.3 = *.K8S.home
+DNS.4 = *.prod.K8S.home
+DNS.5 = *.dev.K8S.home
 IP.1  = 127.0.0.1
 
+# ---------- parameters for K8S ---------------
+[ K8S_intermediate_ca ]
+dir                = $MYCA_INTERMITTENT_DIR
+database           = \$dir/index.txt
+serial             = \$dir/serial
+new_certs_dir      = \$dir/newcerts
+default_bits        = 2048
+default_days        = $VALID_DAYS
+default_md          = sha256
+policy              = policy_match
+prompt              = no
+
+[ K8S_intermediate_ca_x509_exts ]  # x509_extensions
+basicConstraints       = critical, CA:true
+subjectKeyIdentifier   = hash
+#authorityKeyIdentifier = keyid:always, issuer:always
+
+[ K8S_req ]
+default_bits        = 2048
+prompt              = no
+default_md          = sha256
+default_days        = 3000
+
+[ K8S_req_v3_ext ]
+#authorityKeyIdentifier = keyid,issuer:always
+basicConstraints       = CA:FALSE
+keyUsage               = keyEncipherment,dataEncipherment,digitalSignature
+extendedKeyUsage       = serverAuth,clientAuth
 "
 
 #=============================================================================
@@ -201,42 +227,42 @@ gen_certs::genCertificate 'SERVER'
 
 
 #=============================================================================
-# === Step 4: Generate Intermediate key and FE Intermediate certificate for K8S front-proxy-ca then sign cert with Root CA & verify ===
-gen_certs::title 'Create Intermediate Certificate, CSR and Key for K8S front-proxy-ca'
+# === Step 4: Generate Intermediate key and certificate for (FE) K8S "front-proxy-ca" then sign cert with Root CA & verify ===
+gen_certs::title 'Create Intermediate Certificate, CSR and Key for K8S "front-proxy-ca"'
 #shellcheck disable=SC2034
 declare -rA K8S_FRONT_PROXY_CA=( ['section']='rootca'
                                  ['signing_key']="$CA_ROOT_KEY"
                                  ['signing_crt']="$CA_ROOT_CRT"
-                                 ['key_file']="${K8S_FRONT_PROXY_CA_KEY:-${MYCA_DIR}/k8s/front-proxy-ca.key}"
-                                 ['crt_file']="${K8S_FRONT_PROXY_CA_CRT:-${MYCA_DIR}/k8s/front-proxy-ca.crt}"
-                                 ['csr_file']="${K8S_FRONT_PROXY_CA_CSR:-${MYCA_DIR}/k8s/front-proxy-ca.csr}"
+                                 ['key_file']="${K8S_FRONT_PROXY_CA_KEY:-${MYCA_DIR}/K8S/front-proxy-ca.key}"
+                                 ['crt_file']="${K8S_FRONT_PROXY_CA_CRT:-${MYCA_DIR}/K8S/front-proxy-ca.crt}"
+                                 ['csr_file']="${K8S_FRONT_PROXY_CA_CSR:-${MYCA_DIR}/K8S/front-proxy-ca.csr}"
                                  ['chain']="${K8S_FRONT_PROXY_CA_CHAIN:-${MYCA_DIR}/certs/front-proxy-ca-Chain.crt}"
-#                                 ['pks']="${K8S_FRONT_PROXY_CA_PKS:-${MYCA_DIR}/k8s/front-proxy-ca.pks}"
+#                                 ['pks']="${K8S_FRONT_PROXY_CA_PKS:-${MYCA_DIR}/K8S/front-proxy-ca.pks}"
                                  ['cipher']="$CIPHER"
-                                 ['csr_extns']='ca_intermediate'
-                                 ['crt_extns']='ca_intermediate_x509_exts'
-                                 ['keylength']="$KEYLENGTH"
+                                 ['csr_extns']='K8S_intermediate_ca'
+                                 ['crt_extns']='K8S_intermediate_ca_x509_exts'
+                                 ['keylength']=2048
                                  ['passphrase']="$PASSPHRASE"
-                                 ['common_name']="${CN_INTERMEDIATE_FE:-Ballantyne k8s-frontend Intermediate CA}"
+                                 ['subject']="${DN_K8S_FRONT_PROXY_CA:-/CN=front-proxy-ca}"
                                  ['cfg_file']="$CONFIG_FILE" )
 gen_certs::genIntermediateCertificate 'K8S_FRONT_PROXY_CA'
 
 
-# === Step 5: Generate front-proxy-client key and then sign cert with Intermediate K8S front-proxy-ca & verify ===
-gen_certs::title 'Issue a Certificate for K8S front-proxy-client based on intermediate K8S_FRONT_PROXY_CA'
+# === Step 5: Generate K8S 'front-proxy-client' key and certificate then sign with Intermediate K8S 'front-proxy-ca' & verify ===
+gen_certs::title 'Issue K8S "front-proxy-client" Certificate for a K8S based on intermediate K8S_FRONT_PROXY_CA'
 #shellcheck disable=SC2034
-declare -rA K8S_FRONT_PROXY_CLIENT=( ['section']='ca_intermediate'
+declare -rA K8S_FRONT_PROXY_CLIENT=( ['section']="${K8S_FRONT_PROXY_CA['csr_extns']}"
                                      ['signing_key']="${K8S_FRONT_PROXY_CA['key_file']}"
                                      ['signing_crt']="${K8S_FRONT_PROXY_CA['crt_file']}"
-                                     ['key_file']="${K8S_FRONT_PROXY_CLIENT_KEY:-${MYCA_DIR}/k8s/front-proxy-client.key}"
-				     ['crt_file']="${K8S_FRONT_PROXY_CLIENT_CRT:-${MYCA_DIR}/k8s/front-proxy-client.crt}"
+                                     ['key_file']="${K8S_FRONT_PROXY_CLIENT_KEY:-${MYCA_DIR}/K8S/front-proxy-client.key}"
+				     ['crt_file']="${K8S_FRONT_PROXY_CLIENT_CRT:-${MYCA_DIR}/K8S/front-proxy-client.crt}"
                                      ['csr_file']="${K8S_FRONT_PROXY_CLIENT_CSR:-${MYCA_DIR}/csr/front-proxy-client.csr}"
-#                                     ['dh_file']="${K8S_FRONT_PROXY_CLIENT_DHPARAM:-${MYCA_DIR}/k8s/front-proxy-client.dhparam.dh}"
-                                     ['csr_extns']='server_section'
-                                     ['crt_extns']='server_x509_exts'
-                                     ['keylength']="$KEYLENGTH"
+#                                     ['dh_file']="${K8S_FRONT_PROXY_CLIENT_DHPARAM:-${MYCA_DIR}/K8S/front-proxy-client.dhparam.dh}"
+                                     ['csr_extns']='K8S_req'
+                                     ['crt_extns']='K8S_req_v3_ext'
+                                     ['keylength']=2048
                                      ['passphrase']="$PASSPHRASE"
-                                     ['common_name']="${CN_FE_SERVER:-Ballantyne K8S_FRONT_PROXY_CLIENT}"
+                                     ['subject']="${DN_K8S_FRONT_PROXY_CLIENT:-/CN=front-proxy-client}"
                                      ['verify_crt']="${K8S_FRONT_PROXY_CA['chain']}"
                                      ['cfg_file']="$CONFIG_FILE" )
 gen_certs::genCertificate 'K8S_FRONT_PROXY_CLIENT'
@@ -244,172 +270,173 @@ gen_certs::genCertificate 'K8S_FRONT_PROXY_CLIENT'
 
 
 #=============================================================================
-# === Step 6: Generate Intermediate K8S CA key and certificate then sign cert with Root CA & verify ===
-gen_certs::title 'Create Intermediate Certificate for K8S CA, CSR and Key'
+# === Step 6: Generate Intermediate key and certificate for (BE) K8S CA then sign cert with Root CA & verify ===
+gen_certs::title 'Create Intermediate Certificate, CSR and Key for K8S CA'
 #shellcheck disable=SC2034
 declare -rA K8S_CA=( ['section']='rootca'
                      ['signing_key']="$CA_ROOT_KEY"
                      ['signing_crt']="$CA_ROOT_CRT"
-                     ['key_file']="${K8S_CA_KEY:-${MYCA_DIR}/k8s/ca.key}"
-                     ['crt_file']="${K8S_CA_CRT:-${MYCA_DIR}/k8s/ca.crt}"
+                     ['key_file']="${K8S_CA_KEY:-${MYCA_DIR}/K8S/ca.key}"
+                     ['crt_file']="${K8S_CA_CRT:-${MYCA_DIR}/K8S/ca.crt}"
                      ['csr_file']="${K8S_CA_CSR:-${MYCA_DIR}/csr/ca.csr}"
                      ['chain']="${K8S_CA_CHAIN:-${MYCA_DIR}/certs/ca-Chain.crt}"
 #                     ['pks']="${K8S_CA_PKS:-${MYCA_DIR}/certs/ca.pks}"
                      ['cipher']="$CIPHER"
-                     ['csr_extns']='ca_intermediate'
-                     ['crt_extns']='ca_intermediate_x509_exts'
-                     ['keylength']="$KEYLENGTH"
+                     ['csr_extns']='K8S_intermediate_ca'
+                     ['crt_extns']='K8S_intermediate_ca_x509_exts'
+                     ['keylength']=2048
                      ['passphrase']="$PASSPHRASE"
-                     ['common_name']="${CN_INTERMEDIATE_BE:-Ballantyne k8s-backend Intermediate CA}"
+                     ['subject']="${DN_K8S_CA:-/CN=10.152.183.1}"
                      ['cfg_file']="$CONFIG_FILE" )
 gen_certs::genIntermediateCertificate 'K8S_CA'
 
 
-# === Step 7: Generate K8s client key and certificate then sign with Intermediate certificate Root CA 'ca.key' & verify ===
-gen_certs::title 'Issue a client Certificate for a K8S based on intermediate K8S_CA'
+# === Step 7: Generate K8S 'client' key and certificate then sign with Intermediate certificate Root CA 'ca.key' & verify ===
+gen_certs::title 'Issue K8S "client" Certificate for a K8S based on intermediate K8S_CA'
 #shellcheck disable=SC2034
-declare -rA K8S_CLIENT=( ['section']='ca_intermediate'
+declare -rA K8S_CLIENT=( ['section']="${K8S_CA['csr_extns']}"
                          ['signing_key']="${K8S_CA['key_file']}"
                          ['signing_crt']="${K8S_CA['crt_file']}"
-                         ['key_file']="${K8S_CLIENT_KEY:-${MYCA_DIR}/k8s/client.key}"
-			 ['crt_file']="${K8S_CLIENT_CRT:-${MYCA_DIR}/k8s/client.crt}"
+                         ['key_file']="${K8S_CLIENT_KEY:-${MYCA_DIR}/K8S/client.key}"
+			 ['crt_file']="${K8S_CLIENT_CRT:-${MYCA_DIR}/K8S/client.crt}"
                          ['csr_file']="${K8S_CLIENT_CSR:-${MYCA_DIR}/csr/client.csr}"
-#                         ['dh_file']="${K8S_CLIENT_DHPARAM:-${MYCA_DIR}/k8s/client.dhparam.dh}"
-                         ['csr_extns']='server_section'
-                         ['crt_extns']='server_x509_exts'
-                         ['keylength']="$KEYLENGTH"
+#                         ['dh_file']="${K8S_CLIENT_DHPARAM:-${MYCA_DIR}/K8S/client.dhparam.dh}"
+                         ['csr_extns']='K8S_req'
+#                         ['crt_extns']='K8S_req_v3_ext'
+                         ['keylength']=2048
                          ['passphrase']="$PASSPHRASE"
-                         ['common_name']="${CN_BE_SERVER:-Ballantyne K8S_CLIENT}"
+                         ['subject']="${DN_K8S_CLIENT:-/CN=admin/O=system:masters}"
                          ['verify_crt']="${K8S_CA['chain']}"
                          ['cfg_file']="$CONFIG_FILE" )
 gen_certs::genCertificate 'K8S_CLIENT'
 
 
-# === Step 8: Generate K8s controller key and certificate then sign with Intermediate certificate Root CA 'ca.key' & verify ===
-gen_certs::title 'Issue a controller Certificate for a K8S based on intermediate K8S_CA'
+# === Step 8: Generate K8S 'controller' key and certificate then sign with Intermediate certificate Root CA 'ca.key' & verify ===
+gen_certs::title 'Issue K8S "controller" Certificate based on intermediate K8S_CA'
 #shellcheck disable=SC2034
-declare -rA K8S_CONTROLLER=( ['section']='ca_intermediate'
+declare -rA K8S_CONTROLLER=( ['section']="${K8S_CA['csr_extns']}"
                              ['signing_key']="${K8S_CA['key_file']}"
                              ['signing_crt']="${K8S_CA['crt_file']}"
-                             ['key_file']="${K8S_CONTROLLER_KEY:-${MYCA_DIR}/k8s/controller.key}"
-			     ['crt_file']="${K8S_CONTROLLER_CRT:-${MYCA_DIR}/k8s/controller.crt}"
+                             ['key_file']="${K8S_CONTROLLER_KEY:-${MYCA_DIR}/K8S/controller.key}"
+			     ['crt_file']="${K8S_CONTROLLER_CRT:-${MYCA_DIR}/K8S/controller.crt}"
                              ['csr_file']="${K8S_CONTROLLER_CSR:-${MYCA_DIR}/csr/controller.csr}"
-#                             ['dh_file']="${K8S_CONTROLLER_DHPARAM:-${MYCA_DIR}/k8s/controller.dhparam.dh}"
-                             ['csr_extns']='server_section'
-                             ['crt_extns']='server_x509_exts'
-                             ['keylength']="$KEYLENGTH"
+#                             ['dh_file']="${K8S_CONTROLLER_DHPARAM:-${MYCA_DIR}/K8S/controller.dhparam.dh}"
+                             ['csr_extns']='K8S_req'
+#                             ['crt_extns']='K8S_req_v3_ext'
+                             ['keylength']=2048
                              ['passphrase']="$PASSPHRASE"
-                             ['common_name']="${CN_BE_SERVER:-Ballantyne K8S_CONTROLLER}"
+                             ['subject']="${DN_K8S_CONTROLLER:-/CN=system:kube-controller-manager}"
                              ['verify_crt']="${K8S_CA['chain']}"
                              ['cfg_file']="$CONFIG_FILE" )
 gen_certs::genCertificate 'K8S_CONTROLLER'
 
 
-# === Step 9: Generate Server key and Intermediate certificate then sign cert with Root CA & verify ===
-gen_certs::title 'Issue a Certificate for a Server based on BE intermediate CA'
+# === Step 9: Generate K8S 'scheduler' key and certificate then sign with Intermediate certificate Root CA 'ca.key' & verify ===
+gen_certs::title 'Issue K8S "scheduler" Certificate based on intermediate K8S_CA'
 #shellcheck disable=SC2034
-declare -rA K8S_SCHEDULER=( ['section']='ca_intermediate'
+declare -rA K8S_SCHEDULER=( ['section']="${K8S_CA['csr_extns']}"
                             ['signing_key']="${K8S_CA['key_file']}"
                             ['signing_crt']="${K8S_CA['crt_file']}"
-                            ['key_file']="${K8S_SCHEDULER_KEY:-${MYCA_DIR}/k8s/scheduler.key}"
-			    ['crt_file']="${K8S_SCHEDULER_CRT:-${MYCA_DIR}/k8s/scheduler.crt}"
+                            ['key_file']="${K8S_SCHEDULER_KEY:-${MYCA_DIR}/K8S/scheduler.key}"
+			    ['crt_file']="${K8S_SCHEDULER_CRT:-${MYCA_DIR}/K8S/scheduler.crt}"
                             ['csr_file']="${K8S_SCHEDULER_CSR:-${MYCA_DIR}/csr/scheduler.csr}"
-#                            ['dh_file']="${K8S_SCHEDULER_DHPARAM:-${MYCA_DIR}/k8s/scheduler.dhparam.dh}"
-                            ['csr_extns']='server_section'
-                            ['crt_extns']='server_x509_exts'
-                            ['keylength']="$KEYLENGTH"
+#                            ['dh_file']="${K8S_SCHEDULER_DHPARAM:-${MYCA_DIR}/K8S/scheduler.dhparam.dh}"
+                            ['csr_extns']='K8S_req'
+#                            ['crt_extns']='K8S_req_v3_ext'
+                            ['keylength']=2048
                             ['passphrase']="$PASSPHRASE"
-                            ['common_name']="${CN_BE_SERVER:-Ballantyne K8S_SCHEDULER}"
+                            ['subject']="${DN_K8S_SCHEDULER:-/CN=system:kube-scheduler}"
                             ['verify_crt']="${K8S_CA['chain']}"
                             ['cfg_file']="$CONFIG_FILE" )
 gen_certs::genCertificate 'K8S_SCHEDULER'
 
 
-# === Step 10: Generate Server key and Intermediate certificate then sign cert with Root CA & verify ===
-gen_certs::title 'Issue a Certificate for a Server based on BE intermediate CA'
+# === Step 10: Generate K8S 'proxy' key and certificate then sign with Intermediate certificate Root CA 'ca.key' & verify ===
+gen_certs::title 'Issue K8S "proxy" Certificate based on intermediate K8S_CA'
 #shellcheck disable=SC2034
-declare -rA K8S_PROXY=( ['section']='ca_intermediate'
+declare -rA K8S_PROXY=( ['section']="${K8S_CA['csr_extns']}"
                         ['signing_key']="${K8S_CA['key_file']}"
                         ['signing_crt']="${K8S_CA['crt_file']}"
-                        ['key_file']="${K8S_PROXY_KEY:-${MYCA_DIR}/k8s/proxy.key}"
-			['crt_file']="${K8S_PROXY_CRT:-${MYCA_DIR}/k8s/proxy.crt}"
+                        ['key_file']="${K8S_PROXY_KEY:-${MYCA_DIR}/K8S/proxy.key}"
+			['crt_file']="${K8S_PROXY_CRT:-${MYCA_DIR}/K8S/proxy.crt}"
                         ['csr_file']="${K8S_PROXY_CSR:-${MYCA_DIR}/csr/proxy.csr}"
-#                        ['dh_file']="${K8S_PROXY_DHPARAM:-${MYCA_DIR}/k8s/proxy.dhparam.dh}"
-                        ['csr_extns']='server_section'
-                        ['crt_extns']='server_x509_exts'
-                        ['keylength']="$KEYLENGTH"
+#                        ['dh_file']="${K8S_PROXY_DHPARAM:-${MYCA_DIR}/K8S/proxy.dhparam.dh}"
+                        ['csr_extns']='K8S_req'
+#                        ['crt_extns']='K8S_req_v3_ext'
+                        ['keylength']=2048
                         ['passphrase']="$PASSPHRASE"
-                        ['common_name']="${CN_BE_SERVER:-Ballantyne K8S_PROXY}"
+                        ['subject']="${DN_K8S_PROXY:-/CN=system:kube-proxy}"
                         ['verify_crt']="${K8S_CA['chain']}"
                         ['cfg_file']="$CONFIG_FILE" )
 gen_certs::genCertificate 'K8S_PROXY'
 
 
-# === Step 11: Generate Server key and Intermediate certificate then sign cert with Root CA & verify ===
-gen_certs::title 'Issue a Certificate for a Server based on BE intermediate CA'
+# === Step 11: Generate K8S 'apiserver-kubelet-client' key and certificate then sign with Intermediate certificate Root CA 'ca.key' & verify ===
+gen_certs::title 'Issue K8S "apiserver-kubelet-client" Certificate based on intermediate K8S_CA'
 #shellcheck disable=SC2034
-declare -rA K8S_APISERVER_KUBLET_CLIENT=( ['section']='ca_intermediate'
+declare -rA K8S_APISERVER_KUBLET_CLIENT=( ['section']="${K8S_CA['csr_extns']}"
                                           ['signing_key']="${K8S_CA['key_file']}"
                                           ['signing_crt']="${K8S_CA['crt_file']}"
-                                          ['key_file']="${K8S_APISERVER_KUBLET_CLIENT_KEY:-${MYCA_DIR}/k8s/apiserver-kubelet-client.key}"
-			                  ['crt_file']="${K8S_APISERVER_KUBLET_CLIENT_CRT:-${MYCA_DIR}/k8s/apiserver-kubelet-client.crt}"
+                                          ['key_file']="${K8S_APISERVER_KUBLET_CLIENT_KEY:-${MYCA_DIR}/K8S/apiserver-kubelet-client.key}"
+			                  ['crt_file']="${K8S_APISERVER_KUBLET_CLIENT_CRT:-${MYCA_DIR}/K8S/apiserver-kubelet-client.crt}"
                                           ['csr_file']="${K8S_APISERVER_KUBLET_CLIENT_CSR:-${MYCA_DIR}/csr/apiserver-kubelet-client.csr}"
-#                                          ['dh_file']="${K8S_APISERVER_KUBLET_CLIENT_DHPARAM:-${MYCA_DIR}/k8s/apiserver-kubelet-client.dhparam.dh}"
-                                          ['csr_extns']='server_section'
-                                          ['crt_extns']='server_x509_exts'
-                                          ['keylength']="$KEYLENGTH"
+#                                          ['dh_file']="${K8S_APISERVER_KUBLET_CLIENT_DHPARAM:-${MYCA_DIR}/K8S/apiserver-kubelet-client.dhparam.dh}"
+                                          ['csr_extns']='K8S_req'
+#                                          ['crt_extns']='K8S_req_v3_ext'
+                                          ['keylength']=2048
                                           ['passphrase']="$PASSPHRASE"
-                                          ['common_name']="${CN_BE_SERVER:-Ballantyne K8S_APISERVER_KUBLET_CLIENT}"
+                                          ['subject']="${DN_K8S_APISERVER_KUBLET_CLIENT:-/CN=kube-apiserver-kubelet-client/O=system:masters}"
                                           ['verify_crt']="${K8S_CA['chain']}"
                                           ['cfg_file']="$CONFIG_FILE" )
 gen_certs::genCertificate 'K8S_APISERVER_KUBLET_CLIENT'
 
 
-# === Step 12 Generate Server key and Intermediate certificate then sign cert with Root CA & verify ===
-gen_certs::title 'Issue a Certificate for a Server based on BE intermediate CA'
+# === Step 12: Generate K8S 'server' key and certificate then sign with Intermediate certificate Root CA 'ca.key' & verify ===
+gen_certs::title 'Issue K8S "server" Certificate based on intermediate K8S_CA'
 #shellcheck disable=SC2034
-declare -rA K8S_SERVER=( ['section']='ca_intermediate'
+declare -rA K8S_SERVER=( ['section']="${K8S_CA['csr_extns']}"
                          ['signing_key']="${K8S_CA['key_file']}"
                          ['signing_crt']="${K8S_CA['crt_file']}"
-                         ['key_file']="${K8S_SERVER_KEY:-${MYCA_DIR}/k8s/server.key}"
-			 ['crt_file']="${K8S_SERVER_CRT:-${MYCA_DIR}/k8s/server.crt}"
-                         ['csr_file']="${K8S_SERVER_CSR:-${MYCA_DIR}/k8s/server.csr}"
-#                         ['dh_file']="${K8S_SERVER_DHPARAM:-${MYCA_DIR}/k8s/server.dhparam.dh}"
-                         ['csr_extns']='server_section'
-                         ['crt_extns']='server_x509_exts'
-                         ['keylength']="$KEYLENGTH"
+                         ['key_file']="${K8S_SERVER_KEY:-${MYCA_DIR}/K8S/server.key}"
+			 ['crt_file']="${K8S_SERVER_CRT:-${MYCA_DIR}/K8S/server.crt}"
+                         ['csr_file']="${K8S_SERVER_CSR:-${MYCA_DIR}/K8S/server.csr}"
+#                         ['dh_file']="${K8S_SERVER_DHPARAM:-${MYCA_DIR}/K8S/server.dhparam.dh}"
+                         ['csr_extns']='K8S_req'
+                         ['crt_extns']='K8S_req_v3_ext'
+                         ['keylength']=2048
                          ['passphrase']="$PASSPHRASE"
-                         ['common_name']="${CN_BE_SERVER:-Ballantyne K8S_SERVER}"
+                         ['subject']="${DN_K8S_SERVER:-/C=GB/ST=Canonical/L=Canonical/O=Canonical/OU=Canonical/CN=127.0.0.1}"
                          ['verify_crt']="${K8S_CA['chain']}"
                          ['cfg_file']="$CONFIG_FILE" )
 gen_certs::genCertificate 'K8S_SERVER'
 
 
-# === Step 13 Generate Server key and Intermediate certificate then sign cert with Root CA & verify ===
-gen_certs::title 'Issue a Certificate for a Server based on BE intermediate CA'
+# === Step 14: Generate K8S 'kubelet' key and certificate then sign with Intermediate certificate Root CA 'ca.key' & verify ===
+gen_certs::title 'Issue K8S "kubelet" Certificate based on intermediate K8S_CA'
 #shellcheck disable=SC2034
-declare -rA K8S_KUBLET=( ['section']='ca_intermediate'
-                         ['signing_key']="${K8S_CA['key_file']}"
-                         ['signing_crt']="${K8S_CA['crt_file']}"
-                         ['key_file']="${K8S_KUBLET_KEY:-${MYCA_DIR}/k8s/kublet.key}"
-			 ['crt_file']="${K8S_KUBLET_CRT:-${MYCA_DIR}/k8s/kublet.crt}"
-                         ['csr_file']="${K8S_KUBLET_CSR:-${MYCA_DIR}/csr/kublet.csr}"
-#                         ['dh_file']="${K8S_KUBLET_DHPARAM:-${MYCA_DIR}/k8s/kublet.dhparam.dh}"
-                         ['csr_extns']='server_section'
-                         ['crt_extns']='server_x509_exts'
-                         ['keylength']="$KEYLENGTH"
-                         ['passphrase']="$PASSPHRASE"
-                         ['common_name']="${CN_BE_SERVER:-Ballantyne K8S_KUBLET}"
-                         ['verify_crt']="${K8S_CA['chain']}"
-                         ['cfg_file']="$CONFIG_FILE" )
-gen_certs::genCertificate 'K8S_KUBLET'
+declare -rA K8S_KUBELET=( ['section']="${K8S_CA['csr_extns']}"
+                          ['signing_key']="${K8S_CA['key_file']}"
+                          ['signing_crt']="${K8S_CA['crt_file']}"
+                          ['key_file']="${K8S_KUBELET_KEY:-${MYCA_DIR}/K8S/kubelet.key}"
+			  ['crt_file']="${K8S_KUBELET_CRT:-${MYCA_DIR}/K8S/kubelet.crt}"
+                          ['csr_file']="${K8S_KUBELET_CSR:-${MYCA_DIR}/csr/kubelet.csr}"
+#                          ['dh_file']="${K8S_KUBELET_DHPARAM:-${MYCA_DIR}/K8S/kublet.dhparam.dh}"
+                          ['csr_extns']='K8S_req'
+#                          ['crt_extns']='K8S_req_v3_ext'
+                          ['keylength']=2048
+                          ['passphrase']="$PASSPHRASE"
+                          ['subject']="${DN_KUBELET:-/CN=system:node:s5.ubuntu.home/O=system:nodes}"
+                          ['verify_crt']="${K8S_CA['chain']}"
+                          ['cfg_file']="$CONFIG_FILE" )
+gen_certs::genCertificate 'K8S_KUBELET'
 
 
-# === Step 8: pull out files for nginx & k8s and create zips ===
-gen_certs::title 'Pull out files for nginx & k8s and create zips'
+# === Step 15: pull out files for nginx & K8S and create zips ===
+gen_certs::title 'Pull out files for nginx & K8S and create zips'
 ::files_to_publish
 
 echo 'Trust the Root CA once, and all your certs will be trusted.'
 
 echo -e "\\n${MAGENTA}>> GENERATING SSL CERTS ... DONE${RESET}\\n"
 
+} | tee "${0//.sh}.log"
