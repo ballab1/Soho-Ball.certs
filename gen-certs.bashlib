@@ -290,11 +290,8 @@ function gen_certs::genConfig() {
 
     # verify mandatory params
     for key in 'config' 'cfg_file';do
-        [ "${args[$key]:-}" ] || gen_certs::die "NULL '$key' passed in '${1}'"
+        [ "${#args[$key]}" -gt 0 ] || gen_certs::die "NULL '$key' passed in '${1}'"
     done
-
-    #
-    gen_certs::prepareEnvironment
 
     local -r cfg_file="${args['cfg_file']}"
 
@@ -304,9 +301,6 @@ function gen_certs::genConfig() {
 
     mkdir -p "$(dirname "$cfg_file")" ||:
     echo "${args['config']}" > "$cfg_file"
-
-
-    [ "$(type -t '::__init')" ] && ::__init
 }
 
 #------------------------------------------------------------------------------
@@ -446,7 +440,7 @@ function gen_certs::genRootCertificate() {
     gen_certs::verify_subject "$1" || gen_certs::die "No valid 'distingushed_name' provided in '${1}'"
 
     # create arg list for openssl
-    local -a params=( '-x509' '-new' '-noenc' )
+    local -a params=( '-x509' '-new' '-noenc' '-days' "$VALID_DAYS" )
     for key in "${!args[@]}";do
         case "$key" in
            cfg_file)     params+=( '-config' "${args['cfg_file']}" );;
@@ -455,6 +449,7 @@ function gen_certs::genRootCertificate() {
            section)      params+=( '-section' "${args['section']}" );;
            crt_file)     params+=( '-out' "${args['crt_file']}" );;
            key_file)     params+=( '-key' "${args['key_file']}" );;
+#           days)         params+=( '-days' "$VALID_DAYS" );;
         esac
     done
     [ "${args['passphrase']:-}" ] && params+=( '-passin' "${args['passphrase']}" )
@@ -521,7 +516,10 @@ function gen_certs::onExit() {
 
     # strip ansi chars from logfile
     local logfile="${0//.sh}.log"
-    [ -f "$logfile" ] && sed -i -E -e "$K8S_NO_ASCII" "$logfile"
+    if [ -f "$logfile" ]; then
+        sed -i -E -e "$K8S_NO_ASCII" "$logfile"
+        [ "${MYCA_DIR:-}" ] && mv "$logfile" "$MYCA_DIR"/
+    fi
 
     [ "${TMP_DIR:-}" ] || return
     [ -d "${TMP_DIR}" ] || return
@@ -530,13 +528,11 @@ function gen_certs::onExit() {
 }
 
 #------------------------------------------------------------------------------
-function gen_certs::prepareEnvironment() {
+function gen_certs::prepareNewEnvironment() {
 
 set -ve
 
-    # Prepare Environment
-    export MSYS_NO_PATHCONV=1
-    export MSYS2_ENV_CONV_EXCL='*'
+    # Prepare directory Environment
     [ -d "$MYCA_DIR" ] && rm -rf "$MYCA_DIR"
     mkdir -p "$MYCA_DIR"/{certs,crl,newcerts,private,csr}
     mkdir -p "$MYCA_INTERMITTENT_DIR"/{certs,crl,newcerts,private,csr}
