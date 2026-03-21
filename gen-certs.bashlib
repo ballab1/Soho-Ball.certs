@@ -278,8 +278,8 @@ function gen_certs::genChain() {
 
     #shellcheck disable=SC2086
     echo -e "${BLUE}Establish the Certificate Chain: ${RESET}'${args['chain']}'" >&2
-    [ "${SHOW_OPENSSL:-0}" -ne 0 ] && (echo -e "${GREY}cat '${args['crt_file']}' '${args['signing_crt']}' > '${args['chain']}'${RESET}" >&2)
-    cat "${args['signing_crt']}" "${args['crt_file']}" > "${args['chain']}"
+    [ "${SHOW_OPENSSL:-0}" -ne 0 ] && (echo -e "${GREY}cat '${args['signing_crt']}' '${args['crt_file']}' > '${args['chain']}'${RESET}" >&2)
+    cat "${args['crt_file']}" "${args['signing_crt']}" > "${args['chain']}"
 }
 
 #------------------------------------------------------------------------------

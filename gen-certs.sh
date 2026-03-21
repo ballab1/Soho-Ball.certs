@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# generate a new set of Soho-Ball.certs and save to Soho-Ball_CA
+
 #------------------------------------------------------------------------------
 function ::__config() {
     echo "
@@ -90,11 +92,12 @@ organizationalUnitName  = home
 emailAddress            = ballantyne.robert@gmail.com
 
 [ alt_names ]
-DNS.1 = *.home
-DNS.2 = *.ubuntu.home
-DNS.3 = *.k8s.home
-DNS.4 = *.prod.k8s.home
-DNS.5 = *.dev.k8s.home
+DNS.1 = registry.ubuntu.home
+DNS.2 = *.home
+DNS.3 = *.ubuntu.home
+DNS.4 = *.k8s.home
+DNS.5 = *.prod.k8s.home
+DNS.6 = *.dev.k8s.home
 IP.1  = 127.0.0.1
 
 # ---------- parameters for K8S ---------------
@@ -179,6 +182,7 @@ function ::gen_basic() {
                        ['key_file']="${SERVER_KEY:-${MYCA_DIR}/private/SohoBall-Server.key}"
                        ['crt_file']="${SERVER_CRT:-${MYCA_DIR}/certs/SohoBall-Server.crt}"
                        ['csr_file']="${SERVER_CSR:-${MYCA_DIR}/csr/SohoBall-Server.csr}"
+                       ['chain']="${SERVER_CHAIN:-${MY_DIR}/certs/SohoBall-Server-Chain.crt}"
                        ['dh_file']="${SERVER_DHPARAM:-${MYCA_DIR}/certs/dhparam.dh}"
                        ['csr_extns']='root_server_section'
                        ['crt_extns']='server_x509_exts'
@@ -188,8 +192,28 @@ function ::gen_basic() {
                        ['cfg_file']="$CONFIG_FILE" )
     gen_certs::genCertificate 'SERVER'
 
-    # === Step 3 - 14: generate certs for microk8s ===
-#    ::microk8s_certs
+
+
+    #=============================================================================
+    # === Step 3: Generate registry key and certificate then sign cert with Root CA & verify ===
+    gen_certs::title 'Issue a Certificate for registry'
+    #shellcheck disable=SC2034
+    local -rA REGISTRY=( ['section']='rootca'
+                         ['signing_key']="$CA_ROOT_KEY"
+                         ['signing_crt']="$CA_ROOT_CRT"
+                         ['key_file']="${SERVER_KEY:-${MYCA_DIR}/private/SohoBall-Registry.key}"
+                         ['crt_file']="${SERVER_CRT:-${MYCA_DIR}/certs/SohoBall-Registry.crt}"
+                         ['csr_file']="${SERVER_CSR:-${MYCA_DIR}/csr/SohoBall-Registry.csr}"
+                         ['chain']="${SERVER_CHAIN:-${MY_DIR}/certs/SohoBall-Registry-Chain.crt}"
+                         ['dh_file']="${SERVER_DHPARAM:-${MYCA_DIR}/certs/dhparam.dh}"
+                         ['csr_extns']='root_server_section'
+                         ['crt_extns']='server_x509_exts'
+                         ['keylength']="$KEYLENGTH"
+                         ['passphrase']="$PASSPHRASE"
+                         ['common_name']="${CN_SERVER:-registry.ubuntu.home}"
+                         ['cfg_file']="$CONFIG_FILE" )
+    gen_certs::genCertificate 'REGISTRY'
+
 
     # === Step 15: pull out files for nginx & K8S and create zips ===
     gen_certs::title 'Pull out files for nginx & K8S and create zips'
@@ -250,7 +274,7 @@ function ::main() {
     local -r CIPHER="${CIPHER:-}"
     local -r PASSPHRASE="${PASSPHRASE:-}"
     local -ri KEYLENGTH="${KEYLENGTH:-4096}"
-    local -ri VALID_DAYS="${VALID_DAYS:-3653}"
+    local -ri VALID_DAYS="${VALID_DAYS:-398}"
     local -r MYCA_INTERMITTENT_DIR="${MYCA_INTERMITTENT_DIR:-${MYCA_DIR}/intermediate}"
     local -r K8S_CERT_DIR="${MYCA_DIR}/k8s"
     local -r CONFIG_FILE="${CONFIG_FILE:-${MYCA_DIR}/config.cnf}"
@@ -262,7 +286,7 @@ function ::main() {
     export MSYS2_ENV_CONV_EXCL='*'
 
     # prepare new environment
-    gen_certs::prepareNewEnvironment
+    [ "${CLEAN_ALL:-1}" = 1 ] && gen_certs::prepareNewEnvironment
 
 
     #=============================================================================
@@ -270,7 +294,7 @@ function ::main() {
     #shellcheck disable=SC2034
     local -rA CFG_PARAMS=( ['cfg_file']="$CONFIG_FILE"
                            ['config']="$( ::__config )" )
-    gen_certs::genConfig 'CFG_PARAMS'
+    [ "${CLEAN_ALL:-1}" = 1 ] && gen_certs::genConfig 'CFG_PARAMS'
 
     ::gen_basic
 #    ::gen_k8s
